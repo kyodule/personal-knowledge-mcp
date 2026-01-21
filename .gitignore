@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Database and data
+data/
+*.db
+
+# Configuration with secrets
+config.json
+
+# Logs
+*.log
+mcp-server.log
+server.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test files (optional, keep if you want to share examples)
+# test-docs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Development logs and private notes
+mcp.txt
+docs/conversations/
+2025-12-29-personal-knowledge-mcp-server.md
+
+# Test files with sensitive data
+test-feishu.ts
+test-wiki-sheet.mjs
+test-sheet.ts

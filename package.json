@@ -1,0 +1,41 @@
+{
+  "name": "personal-knowledge-mcp",
+  "version": "1.0.0",
+  "description": "个人知识库 MCP Server - 支持本地文档、飞书、企业微信",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "index": "node dist/index.js --index",
+    "sync": "node dist/index.js --sync"
+  },
+  "keywords": [
+    "mcp",
+    "knowledge-base",
+    "feishu",
+    "wecom"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.56.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@types/adm-zip": "^0.5.7",
+    "@types/xml2js": "^0.4.14",
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^11.7.0",
+    "chokidar": "^4.0.3",
+    "glob": "^11.0.0",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.1",
+    "@types/pdf-parse": "^1.1.4",
+    "typescript": "^5.7.2"
+  }
+}
