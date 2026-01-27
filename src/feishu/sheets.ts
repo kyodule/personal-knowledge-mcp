@@ -215,3 +215,126 @@ function formatAsMarkdownTable(values: unknown[][], sheetTitle: string): string 
 
   return lines.join('\n');
 }
+
+/**
+ * 写入电子表格数据参数
+ */
+export interface WriteSheetDataInput {
+  spreadsheet_token: string;
+  sheet_id?: string;
+  range: string;
+  values: unknown[][];
+}
+
+/**
+ * 追加电子表格数据参数
+ */
+export interface AppendSheetDataInput {
+  spreadsheet_token: string;
+  sheet_id?: string;
+  values: unknown[][];
+}
+
+/**
+ * 写入电子表格指定范围的数据
+ * 使用 v2 API: PUT /sheets/v2/spreadsheets/:spreadsheetToken/values
+ * 
+ * 调用示例：
+ * - range: "A1:C3" (会自动加上 sheet_id)
+ * - range: "0FWSSB!A1:C3" (完整格式，直接使用)
+ * - values: [["行1列1", "行1列2"], ["行2列1", "行2列2"]]
+ */
+export async function writeSheetData(
+  client: lark.Client,
+  input: WriteSheetDataInput
+): Promise<{ updated_cells: number; updated_rows: number; updated_columns: number; range: string }> {
+  const { spreadsheet_token, sheet_id, range, values } = input;
+
+  // 构建范围字符串
+  let rangeStr: string;
+  if (range.includes('!')) {
+    // 用户已经传了完整的 range（如 0FWSSB!A1:C3），直接使用
+    rangeStr = range;
+  } else if (sheet_id) {
+    // 用户传了 sheet_id 和 range（如 A1:C3）
+    rangeStr = `${sheet_id}!${range}`;
+  } else {
+    // 没有 sheet_id，获取第一个工作表
+    const sheets = await listSheets(client, spreadsheet_token);
+    if (sheets.length === 0) {
+      throw new Error('电子表格中没有工作表');
+    }
+    rangeStr = `${sheets[0].sheet_id}!${range}`;
+  }
+
+  // 使用 v2 API 写入数据
+  // 文档: https://open.feishu.cn/document/server-docs/docs/sheets-v3/data-operation/write-data-to-a-single-range
+  const response = await (client as any).request({
+    method: 'PUT',
+    url: `/open-apis/sheets/v2/spreadsheets/${spreadsheet_token}/values`,
+    data: {
+      valueRange: {
+        range: rangeStr,
+        values,
+      },
+    },
+    params: {},
+  });
+
+  // 调试输出
+  if (response.code !== 0) {
+    throw new Error(`写入电子表格数据失败: ${response.msg || '未知错误'} (code: ${response.code}, range: ${rangeStr})`);
+  }
+
+  return {
+    updated_cells: response.data?.updatedCells || 0,
+    updated_rows: response.data?.updatedRows || 0,
+    updated_columns: response.data?.updatedColumns || 0,
+    range: rangeStr,
+  };
+}
+
+/**
+ * 追加电子表格数据（在已有数据后追加新行）
+ * 使用 v2 API: POST /sheets/v2/spreadsheets/:spreadsheetToken/values_append
+ */
+export async function appendSheetData(
+  client: lark.Client,
+  input: AppendSheetDataInput
+): Promise<{ updated_cells: number; updated_rows: number; updated_columns: number }> {
+  const { spreadsheet_token, sheet_id, values } = input;
+
+  // 如果没有指定 sheet_id，先获取第一个工作表
+  let targetSheetId = sheet_id;
+  if (!targetSheetId) {
+    const sheets = await listSheets(client, spreadsheet_token);
+    if (sheets.length === 0) {
+      throw new Error('电子表格中没有工作表');
+    }
+    targetSheetId = sheets[0].sheet_id;
+  }
+
+  const response = await (client as any).request({
+    method: 'POST',
+    url: `/open-apis/sheets/v2/spreadsheets/${spreadsheet_token}/values_append`,
+    data: {
+      valueRange: {
+        range: targetSheetId,
+        values,
+      },
+    },
+    params: {
+      insertDataOption: 'INSERT_ROWS',
+    },
+  });
+
+  if (response.code !== 0) {
+    throw new Error(`追加电子表格数据失败: ${response.msg || '未知错误'}`);
+  }
+
+  return {
+    updated_cells: response.data?.updates?.updatedCells || 0,
+    updated_rows: response.data?.updates?.updatedRows || 0,
+    updated_columns: response.data?.updates?.updatedColumns || 0,
+  };
+}

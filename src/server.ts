@@ -13,6 +13,10 @@ import {
   getFeishuClient,
   getBitableRecords,
   listBitableTables,
+  createBitableRecords,
+  updateBitableRecord,
+  batchUpdateBitableRecords,
+  deleteBitableRecords,
   getWikiNodes,
   getWikiNodeContent,
   extractDocxContent,
@@ -21,6 +25,8 @@ import {
   listSheets,
   getSheetData,
   getSpreadsheetContent,
+  writeSheetData,
+  appendSheetData,
 } from './feishu/index.js';
 
 /**
@@ -335,6 +341,181 @@ export class KnowledgeMCPServer {
               },
               required: ['spreadsheet_token'],
             },
+          },
+          {
+            name: 'write_sheet_data',
+            description: '写入飞书电子表格指定范围的数据（覆盖写入）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                spreadsheet_token: {
+                  type: 'string',
+                  description: '电子表格 token（从 URL 获取）',
+                },
+                sheet_id: {
+                  type: 'string',
+                  description: '工作表 ID（可选，不指定则写入第一个工作表）',
+                },
+                range: {
+                  type: 'string',
+                  description: '写入范围，如 A1:C3',
+                },
+                values: {
+                  type: 'array',
+                  description: '二维数组，每个子数组代表一行数据',
+                  items: {
+                    type: 'array',
+                    items: {},
+                  },
+                },
+              },
+              required: ['spreadsheet_token', 'range', 'values'],
+            },
+          },
+          {
+            name: 'append_sheet_data',
+            description: '追加数据到飞书电子表格（在已有数据后追加新行）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                spreadsheet_token: {
+                  type: 'string',
+                  description: '电子表格 token（从 URL 获取）',
+                },
+                sheet_id: {
+                  type: 'string',
+                  description: '工作表 ID（可选，不指定则追加到第一个工作表）',
+                },
+                values: {
+                  type: 'array',
+                  description: '二维数组，每个子数组代表一行数据',
+                  items: {
+                    type: 'array',
+                    items: {},
+                  },
+                },
+              },
+              required: ['spreadsheet_token', 'values'],
+            },
+          },
+          {
+            name: 'create_bitable_records',
+            description: '创建飞书多维表格记录（支持批量创建）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token（从 URL 获取）',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                records: {
+                  type: 'array',
+                  description: '要创建的记录数组，每条记录包含 fields 字段映射',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      fields: {
+                        type: 'object',
+                        description: '字段名到值的映射',
+                      },
+                    },
+                    required: ['fields'],
+                  },
+                },
+              },
+              required: ['app_token', 'table_id', 'records'],
+            },
+          },
+          {
+            name: 'update_bitable_record',
+            description: '更新飞书多维表格中的单条记录',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                record_id: {
+                  type: 'string',
+                  description: '要更新的记录 ID',
+                },
+                fields: {
+                  type: 'object',
+                  description: '要更新的字段名到值的映射',
+                },
+              },
+              required: ['app_token', 'table_id', 'record_id', 'fields'],
+            },
+          },
+          {
+            name: 'batch_update_bitable_records',
+            description: '批量更新飞书多维表格记录',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                records: {
+                  type: 'array',
+                  description: '要更新的记录数组',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      record_id: {
+                        type: 'string',
+                        description: '记录 ID',
+                      },
+                      fields: {
+                        type: 'object',
+                        description: '要更新的字段',
+                      },
+                    },
+                    required: ['record_id', 'fields'],
+                  },
+                },
+              },
+              required: ['app_token', 'table_id', 'records'],
+            },
+          },
+          {
+            name: 'delete_bitable_records',
+            description: '删除飞书多维表格记录（支持批量删除）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                record_ids: {
+                  type: 'array',
+                  description: '要删除的记录 ID 数组',
+                  items: {
+                    type: 'string',
+                  },
+                },
+              },
+              required: ['app_token', 'table_id', 'record_ids'],
+            },
           }
         );
       }
@@ -390,6 +571,25 @@ export class KnowledgeMCPServer {
 
           case 'list_sheets':
             return await this.handleListSheets(args);
+
+          // 写入工具
+          case 'write_sheet_data':
+            return await this.handleWriteSheetData(args);
+
+          case 'append_sheet_data':
+            return await this.handleAppendSheetData(args);
+
+          case 'create_bitable_records':
+            return await this.handleCreateBitableRecords(args);
+
+          case 'update_bitable_record':
+            return await this.handleUpdateBitableRecord(args);
+
+          case 'batch_update_bitable_records':
+            return await this.handleBatchUpdateBitableRecords(args);
+
+          case 'delete_bitable_records':
+            return await this.handleDeleteBitableRecords(args);
 
           default:
             throw new Error(`未知工具: ${name}`);
@@ -758,6 +958,144 @@ export class KnowledgeMCPServer {
         {
           type: 'text',
           text: JSON.stringify({ sheets }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理写入电子表格数据
+   */
+  private async handleWriteSheetData(args: any) {
+    const client = this.ensureFeishuClient();
+    const { spreadsheet_token, sheet_id, range, values } = args;
+
+    if (!spreadsheet_token || !range || !values) {
+      throw new Error('spreadsheet_token、range 和 values 参数必须提供');
+    }
+
+    const result = await writeSheetData(client, { spreadsheet_token, sheet_id, range, values });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理追加电子表格数据
+   */
+  private async handleAppendSheetData(args: any) {
+    const client = this.ensureFeishuClient();
+    const { spreadsheet_token, sheet_id, values } = args;
+
+    if (!spreadsheet_token || !values) {
+      throw new Error('spreadsheet_token 和 values 参数必须提供');
+    }
+
+    const result = await appendSheetData(client, { spreadsheet_token, sheet_id, values });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理创建多维表格记录
+   */
+  private async handleCreateBitableRecords(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, records } = args;
+
+    if (!app_token || !table_id || !records) {
+      throw new Error('app_token、table_id 和 records 参数必须提供');
+    }
+
+    const result = await createBitableRecords(client, { app_token, table_id, records });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理更新单条多维表格记录
+   */
+  private async handleUpdateBitableRecord(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, record_id, fields } = args;
+
+    if (!app_token || !table_id || !record_id || !fields) {
+      throw new Error('app_token、table_id、record_id 和 fields 参数必须提供');
+    }
+
+    const result = await updateBitableRecord(client, { app_token, table_id, record_id, fields });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理批量更新多维表格记录
+   */
+  private async handleBatchUpdateBitableRecords(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, records } = args;
+
+    if (!app_token || !table_id || !records) {
+      throw new Error('app_token、table_id 和 records 参数必须提供');
+    }
+
+    const result = await batchUpdateBitableRecords(client, { app_token, table_id, records });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理删除多维表格记录
+   */
+  private async handleDeleteBitableRecords(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, record_ids } = args;
+
+    if (!app_token || !table_id || !record_ids) {
+      throw new Error('app_token、table_id 和 record_ids 参数必须提供');
+    }
+
+    const result = await deleteBitableRecords(client, { app_token, table_id, record_ids });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };
