@@ -16,43 +16,56 @@ export interface DriveFile {
 }
 
 /**
- * 列出云盘文件夹中的文件
+ * 列出云盘文件夹中的文件（支持分页）
  */
 export async function listDriveFiles(
   client: lark.Client,
   input: ListDriveFilesInput
 ): Promise<{ files: DriveFile[]; has_more: boolean }> {
   const { folder_token, file_type, page_size = 50 } = input;
+  const allFiles: DriveFile[] = [];
+  let pageToken: string | undefined;
+  let hasMore = false;
 
-  const params: Record<string, unknown> = {
-    page_size,
-    folder_token,
-  };
+  do {
+    const params: Record<string, unknown> = {
+      page_size,
+      folder_token,
+    };
 
-  if (file_type) {
-    params.file_type = file_type;
-  }
+    if (file_type) {
+      params.file_type = file_type;
+    }
 
-  const response = await client.drive.file.list({
-    params: params as any,
-  });
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
 
-  if (!response.data) {
-    throw new Error(`获取云盘文件列表失败: ${response.msg}`);
-  }
+    const response = await client.drive.file.list({
+      params: params as any,
+    });
 
-  const files: DriveFile[] = (response.data.files || []).map((file) => ({
-    token: file.token || '',
-    name: file.name || '',
-    type: file.type || '',
-    created_time: file.created_time ? new Date(parseInt(file.created_time) * 1000).toISOString() : '',
-    modified_time: file.modified_time ? new Date(parseInt(file.modified_time) * 1000).toISOString() : '',
-    owner_id: file.owner_id,
-  }));
+    if (!response.data) {
+      throw new Error(`获取云盘文件列表失败: ${response.msg}`);
+    }
+
+    const files = (response.data.files || []).map((file) => ({
+      token: file.token || '',
+      name: file.name || '',
+      type: file.type || '',
+      created_time: file.created_time ? new Date(parseInt(file.created_time) * 1000).toISOString() : '',
+      modified_time: file.modified_time ? new Date(parseInt(file.modified_time) * 1000).toISOString() : '',
+      owner_id: file.owner_id,
+    }));
+
+    allFiles.push(...files);
+    hasMore = response.data.has_more || false;
+    pageToken = response.data.next_page_token || undefined;
+  } while (pageToken);
 
   return {
-    files,
-    has_more: response.data.has_more || false,
+    files: allFiles,
+    has_more: hasMore,
   };
 }
 
@@ -95,40 +108,40 @@ export async function getDriveFileContent(
 
 /**
  * 获取文件元信息
+ * 使用 meta batch 接口，不依赖文件夹位置
  */
 export async function getDriveFileMeta(
   client: lark.Client,
   fileToken: string,
   fileType: string
 ): Promise<{ name: string; owner: string; created_time: string; modified_time: string }> {
-  // 使用 list 接口获取文件信息（file.get 在某些 SDK 版本中不可用）
-  const response = await client.drive.file.list({
-    params: { 
-      folder_token: 'root',
-      page_size: 200 
-    } as any,
-  });
+  try {
+    const response = await (client as any).request({
+      method: 'POST',
+      url: '/open-apis/drive/v1/metas/batch_query',
+      data: {
+        request_docs: [{ doc_token: fileToken, doc_type: fileType }],
+      },
+      params: {},
+    });
 
-  if (!response.data?.files) {
-    throw new Error(`获取文件列表失败: ${response.msg}`);
-  }
-
-  const file = response.data.files.find((f) => f.token === fileToken);
-  
-  if (!file) {
-    // 如果根目录找不到，返回基本信息
-    return {
-      name: '',
-      owner: '',
-      created_time: '',
-      modified_time: '',
-    };
+    if (response.code === 0 && response.data?.metas?.length > 0) {
+      const meta = response.data.metas[0];
+      return {
+        name: meta.title || '',
+        owner: meta.owner_id || '',
+        created_time: meta.create_time ? new Date(parseInt(meta.create_time) * 1000).toISOString() : '',
+        modified_time: meta.latest_modify_time ? new Date(parseInt(meta.latest_modify_time) * 1000).toISOString() : '',
+      };
+    }
+  } catch {
+    // fallback below
   }
 
   return {
-    name: file.name || '',
-    owner: file.owner_id || '',
-    created_time: file.created_time ? new Date(parseInt(file.created_time) * 1000).toISOString() : '',
-    modified_time: file.modified_time ? new Date(parseInt(file.modified_time) * 1000).toISOString() : '',
+    name: '',
+    owner: '',
+    created_time: '',
+    modified_time: '',
   };
 }

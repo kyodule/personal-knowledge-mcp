@@ -2,7 +2,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { GetBitableRecordsInput } from '../types.js';
 
 /**
- * 获取多维表格记录（支持筛选、字段选择、排序）
+ * 获取多维表格记录（支持筛选、字段选择、排序、自动分页）
  */
 export async function getBitableRecords(
   client: lark.Client,
@@ -12,68 +12,97 @@ export async function getBitableRecords(
   records: Array<{ record_id: string; fields: Record<string, unknown> }>;
 }> {
   const { app_token, table_id, view_id, filter, field_names, sort, page_size = 100 } = input;
+  const allRecords: Array<{ record_id: string; fields: Record<string, unknown> }> = [];
+  let pageToken: string | undefined;
+  let total = 0;
 
-  const params: Record<string, unknown> = {
-    page_size,
-  };
+  do {
+    const params: Record<string, unknown> = {
+      page_size,
+    };
 
-  if (view_id) {
-    params.view_id = view_id;
-  }
+    if (view_id) {
+      params.view_id = view_id;
+    }
 
-  if (filter) {
-    params.filter = filter;
-  }
+    if (filter) {
+      params.filter = filter;
+    }
 
-  if (field_names && field_names.length > 0) {
-    params.field_names = JSON.stringify(field_names);
-  }
+    if (field_names && field_names.length > 0) {
+      params.field_names = field_names;
+    }
 
-  if (sort) {
-    params.sort = sort;
-  }
+    if (sort) {
+      params.sort = sort;
+    }
 
-  const response = await client.bitable.appTableRecord.list({
-    path: { app_token, table_id },
-    params: params as any,
-  });
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
 
-  if (!response.data) {
-    throw new Error(`获取多维表格记录失败: ${response.msg}`);
-  }
+    const response = await client.bitable.appTableRecord.list({
+      path: { app_token, table_id },
+      params: params as any,
+    });
 
-  const records = (response.data.items || []).map((item) => ({
-    record_id: item.record_id || '',
-    fields: item.fields || {},
-  }));
+    if (!response.data) {
+      throw new Error(`获取多维表格记录失败: ${response.msg}`);
+    }
+
+    total = response.data.total || 0;
+
+    const records = (response.data.items || []).map((item) => ({
+      record_id: item.record_id || '',
+      fields: item.fields || {},
+    }));
+
+    allRecords.push(...records);
+    pageToken = response.data.page_token || undefined;
+  } while (pageToken);
 
   return {
-    total: response.data.total || records.length,
-    records,
+    total,
+    records: allRecords,
   };
 }
 
 /**
- * 列出多维表格中的所有数据表
+ * 列出多维表格中的所有数据表（支持分页）
  */
 export async function listBitableTables(
   client: lark.Client,
   appToken: string
 ): Promise<Array<{ table_id: string; name: string; revision: number }>> {
-  const response = await client.bitable.appTable.list({
-    path: { app_token: appToken },
-    params: { page_size: 100 },
-  });
+  const allTables: Array<{ table_id: string; name: string; revision: number }> = [];
+  let pageToken: string | undefined;
 
-  if (!response.data) {
-    throw new Error(`获取数据表列表失败: ${response.msg}`);
-  }
+  do {
+    const params: Record<string, unknown> = { page_size: 100 };
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
 
-  return (response.data.items || []).map((item) => ({
-    table_id: item.table_id || '',
-    name: item.name || '',
-    revision: item.revision || 0,
-  }));
+    const response = await client.bitable.appTable.list({
+      path: { app_token: appToken },
+      params: params as any,
+    });
+
+    if (!response.data) {
+      throw new Error(`获取数据表列表失败: ${response.msg}`);
+    }
+
+    const tables = (response.data.items || []).map((item) => ({
+      table_id: item.table_id || '',
+      name: item.name || '',
+      revision: item.revision || 0,
+    }));
+
+    allTables.push(...tables);
+    pageToken = response.data.page_token || undefined;
+  } while (pageToken);
+
+  return allTables;
 }
 
 /**

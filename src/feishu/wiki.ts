@@ -135,41 +135,52 @@ function formatCellValue(value: unknown): string {
 }
 
 /**
- * 获取知识空间节点列表
+ * 获取知识空间节点列表（支持分页）
  */
 export async function getWikiNodes(
   client: lark.Client,
   input: GetWikiNodesInput
 ): Promise<{ nodes: WikiNode[] }> {
   const { space_id, parent_node_token } = input;
+  const allNodes: WikiNode[] = [];
+  let pageToken: string | undefined;
 
-  const params: Record<string, unknown> = {
-    page_size: 50,
-  };
+  do {
+    const params: Record<string, unknown> = {
+      page_size: 50,
+    };
 
-  if (parent_node_token) {
-    params.parent_node_token = parent_node_token;
-  }
+    if (parent_node_token) {
+      params.parent_node_token = parent_node_token;
+    }
 
-  const response = await client.wiki.spaceNode.list({
-    path: { space_id },
-    params: params as any,
-  });
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
 
-  if (!response.data) {
-    throw new Error(`获取知识空间节点失败: ${response.msg}`);
-  }
+    const response = await client.wiki.spaceNode.list({
+      path: { space_id },
+      params: params as any,
+    });
 
-  const nodes: WikiNode[] = (response.data.items || []).map((item) => ({
-    node_token: item.node_token || '',
-    obj_token: item.obj_token || '',
-    obj_type: item.obj_type || '',
-    title: item.title || '',
-    has_child: item.has_child || false,
-    parent_node_token: item.parent_node_token,
-  }));
+    if (!response.data) {
+      throw new Error(`获取知识空间节点失败: ${response.msg}`);
+    }
 
-  return { nodes };
+    const nodes = (response.data.items || []).map((item) => ({
+      node_token: item.node_token || '',
+      obj_token: item.obj_token || '',
+      obj_type: item.obj_type || '',
+      title: item.title || '',
+      has_child: item.has_child || false,
+      parent_node_token: item.parent_node_token,
+    }));
+
+    allNodes.push(...nodes);
+    pageToken = response.data.page_token || undefined;
+  } while (pageToken);
+
+  return { nodes: allNodes };
 }
 
 /**
@@ -182,31 +193,46 @@ export async function getWikiNodeContent(
 ): Promise<{ title: string; content: string; obj_type: string }> {
   const { space_id, node_token } = input;
 
-  let objToken: string;
-  let objType: string;
-  let title: string;
+  let objToken = '';
+  let objType = '';
+  let title = '';
 
   if (space_id) {
-    // 如果提供了 space_id，通过 list 接口获取节点信息
-    const listResponse = await client.wiki.spaceNode.list({
-      path: { space_id },
-      params: { page_size: 500 } as any,
-    });
+    // 如果提供了 space_id，通过分页 list 接口查找节点
+    let found = false;
+    let pageToken: string | undefined;
 
-    if (!listResponse.data?.items) {
-      throw new Error(`获取知识库节点列表失败: ${listResponse.msg}`);
-    }
+    do {
+      const params: Record<string, unknown> = { page_size: 50 };
+      if (pageToken) {
+        params.page_token = pageToken;
+      }
 
-    // 查找目标节点
-    const node = listResponse.data.items.find((item) => item.node_token === node_token);
-    
-    if (!node) {
+      const listResponse = await client.wiki.spaceNode.list({
+        path: { space_id },
+        params: params as any,
+      });
+
+      if (!listResponse.data?.items) {
+        throw new Error(`获取知识库节点列表失败: ${listResponse.msg}`);
+      }
+
+      const node = listResponse.data.items.find((item) => item.node_token === node_token);
+
+      if (node) {
+        objToken = node.obj_token || '';
+        objType = node.obj_type || '';
+        title = node.title || '';
+        found = true;
+        break;
+      }
+
+      pageToken = listResponse.data.page_token || undefined;
+    } while (pageToken);
+
+    if (!found) {
       throw new Error(`未找到节点: ${node_token}`);
     }
-
-    objToken = node.obj_token || '';
-    objType = node.obj_type || '';
-    title = node.title || '';
   } else {
     // 如果没有 space_id，使用 getNode 接口直接获取节点信息
     const nodeResponse = await client.wiki.space.getNode({

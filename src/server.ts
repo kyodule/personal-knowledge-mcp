@@ -11,6 +11,7 @@ import { LocalCrawler } from './crawlers/local-crawler.js';
 import { Config, SearchFilters } from './types.js';
 import {
   getFeishuClient,
+  resetFeishuClient,
   getBitableRecords,
   listBitableTables,
   createBitableRecords,
@@ -544,52 +545,52 @@ export class KnowledgeMCPServer {
           case 'sync_local_documents':
             return await this.handleSyncLocal();
 
-          // 飞书相关工具
+          // 飞书相关工具（统一 retry 包装）
           case 'get_bitable_records':
-            return await this.handleGetBitableRecords(args);
+            return await this.withFeishuRetry(() => this.handleGetBitableRecords(args));
 
           case 'list_bitable_tables':
-            return await this.handleListBitableTables(args);
+            return await this.withFeishuRetry(() => this.handleListBitableTables(args));
 
           case 'get_wiki_nodes':
-            return await this.handleGetWikiNodes(args);
+            return await this.withFeishuRetry(() => this.handleGetWikiNodes(args));
 
           case 'get_wiki_node_content':
-            return await this.handleGetWikiNodeContent(args);
+            return await this.withFeishuRetry(() => this.handleGetWikiNodeContent(args));
 
           case 'get_docx_content':
-            return await this.handleGetDocxContent(args);
+            return await this.withFeishuRetry(() => this.handleGetDocxContent(args));
 
           case 'list_drive_files':
-            return await this.handleListDriveFiles(args);
+            return await this.withFeishuRetry(() => this.handleListDriveFiles(args));
 
           case 'get_drive_file_content':
-            return await this.handleGetDriveFileContent(args);
+            return await this.withFeishuRetry(() => this.handleGetDriveFileContent(args));
 
           case 'get_sheet_data':
-            return await this.handleGetSheetData(args);
+            return await this.withFeishuRetry(() => this.handleGetSheetData(args));
 
           case 'list_sheets':
-            return await this.handleListSheets(args);
+            return await this.withFeishuRetry(() => this.handleListSheets(args));
 
           // 写入工具
           case 'write_sheet_data':
-            return await this.handleWriteSheetData(args);
+            return await this.withFeishuRetry(() => this.handleWriteSheetData(args));
 
           case 'append_sheet_data':
-            return await this.handleAppendSheetData(args);
+            return await this.withFeishuRetry(() => this.handleAppendSheetData(args));
 
           case 'create_bitable_records':
-            return await this.handleCreateBitableRecords(args);
+            return await this.withFeishuRetry(() => this.handleCreateBitableRecords(args));
 
           case 'update_bitable_record':
-            return await this.handleUpdateBitableRecord(args);
+            return await this.withFeishuRetry(() => this.handleUpdateBitableRecord(args));
 
           case 'batch_update_bitable_records':
-            return await this.handleBatchUpdateBitableRecords(args);
+            return await this.withFeishuRetry(() => this.handleBatchUpdateBitableRecords(args));
 
           case 'delete_bitable_records':
-            return await this.handleDeleteBitableRecords(args);
+            return await this.withFeishuRetry(() => this.handleDeleteBitableRecords(args));
 
           default:
             throw new Error(`未知工具: ${name}`);
@@ -746,6 +747,35 @@ export class KnowledgeMCPServer {
       throw new Error('飞书功能未启用，请在 config.json 中配置 feishu.enabled: true 并提供 app_id 和 app_secret');
     }
     return this.feishuClient;
+  }
+
+  /**
+   * 包装飞书 API 调用，添加 retry 和友好错误提示
+   */
+  private async withFeishuRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        const msg = error?.message || String(error);
+        if (msg.includes('tenant_access_token') && msg.includes('undefined')) {
+          if (attempt < maxRetries) {
+            // 重置客户端实例，强制重新获取 token
+            resetFeishuClient();
+            this.feishuClient = getFeishuClient(this.config.feishu);
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            continue;
+          }
+          throw new Error(
+            '飞书认证失败：无法获取 tenant_access_token。' +
+            '这通常是网络问题（超时/DNS/代理）导致的，SDK 内部吞掉了原始错误。' +
+            '请检查网络连接后重试。'
+          );
+        }
+        throw error;
+      }
+    }
+    throw new Error('飞书 API 调用失败：已达最大重试次数');
   }
 
   /**

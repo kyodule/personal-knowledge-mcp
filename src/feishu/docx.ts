@@ -1,26 +1,45 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 
 /**
- * 从云文档中提取纯文本内容
+ * 从云文档中提取纯文本内容（支持分页）
  */
 export async function extractDocxContent(
   client: lark.Client,
   documentId: string
 ): Promise<string> {
-  // 获取文档的所有块
-  const response = await client.docx.documentBlock.list({
-    path: { document_id: documentId },
-    params: { page_size: 500 },
-  });
+  const allBlocks: any[] = [];
+  let pageToken: string | undefined;
 
-  if (!response.data?.items) {
-    throw new Error(`获取文档内容失败: ${response.msg}`);
+  // 分页获取所有块
+  do {
+    const params: Record<string, unknown> = { page_size: 500 };
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
+
+    const response = await client.docx.documentBlock.list({
+      path: { document_id: documentId },
+      params: params as any,
+    });
+
+    if (!response.data?.items) {
+      throw new Error(`获取文档内容失败: ${response.msg}`);
+    }
+
+    allBlocks.push(...response.data.items);
+    pageToken = response.data.page_token || undefined;
+  } while (pageToken);
+
+  // 建立 block_id -> block 映射，用于表格递归
+  const blockMap = new Map<string, any>();
+  for (const block of allBlocks) {
+    blockMap.set(block.block_id, block);
   }
 
   const textParts: string[] = [];
 
-  for (const block of response.data.items) {
-    const text = extractTextFromBlock(block);
+  for (const block of allBlocks) {
+    const text = extractTextFromBlock(block, blockMap);
     if (text) {
       textParts.push(text);
     }
@@ -32,8 +51,13 @@ export async function extractDocxContent(
 /**
  * 从单个块中提取文本
  */
-function extractTextFromBlock(block: any): string {
+function extractTextFromBlock(block: any, blockMap: Map<string, any>): string {
   const blockType = block.block_type;
+
+  // 页面块
+  if (blockType === 1 && block.page?.elements) {
+    return extractTextElements(block.page.elements);
+  }
 
   // 文本块
   if (blockType === 2 && block.text?.elements) {
@@ -41,7 +65,7 @@ function extractTextFromBlock(block: any): string {
   }
 
   // 标题块 (H1-H9: block_type 3-11)
-  if (blockType >= 3 && blockType <= 11 && block.heading1?.elements) {
+  if (blockType >= 3 && blockType <= 11) {
     const headingKey = `heading${blockType - 2}`;
     const heading = block[headingKey];
     if (heading?.elements) {
@@ -49,14 +73,14 @@ function extractTextFromBlock(block: any): string {
     }
   }
 
-  // 有序列表
-  if (blockType === 12 && block.ordered?.elements) {
-    return extractTextElements(block.ordered.elements);
+  // 无序列表 (bullet)
+  if (blockType === 12 && block.bullet?.elements) {
+    return extractTextElements(block.bullet.elements);
   }
 
-  // 无序列表
-  if (blockType === 13 && block.bullet?.elements) {
-    return extractTextElements(block.bullet.elements);
+  // 有序列表 (ordered)
+  if (blockType === 13 && block.ordered?.elements) {
+    return extractTextElements(block.ordered.elements);
   }
 
   // 代码块
@@ -74,13 +98,39 @@ function extractTextFromBlock(block: any): string {
     return extractTextElements(block.todo.elements);
   }
 
-  // 表格单元格
-  if (blockType === 27 && block.table_cell) {
-    // 表格单元格的内容在子块中，这里返回空
-    return '';
+  // 高亮块 (callout)
+  if (blockType === 19 && block.callout?.elements) {
+    return extractTextElements(block.callout.elements);
+  }
+
+  // 表格块：递归提取子块内容
+  if (blockType === 26 && block.children?.length) {
+    return extractChildrenText(block.children, blockMap);
+  }
+
+  // 表格单元格：递归提取子块内容
+  if (blockType === 27 && block.children?.length) {
+    return extractChildrenText(block.children, blockMap);
   }
 
   return '';
+}
+
+/**
+ * 递归提取子块文本
+ */
+function extractChildrenText(childIds: string[], blockMap: Map<string, any>): string {
+  const parts: string[] = [];
+  for (const childId of childIds) {
+    const childBlock = blockMap.get(childId);
+    if (childBlock) {
+      const text = extractTextFromBlock(childBlock, blockMap);
+      if (text) {
+        parts.push(text);
+      }
+    }
+  }
+  return parts.join(' ');
 }
 
 /**

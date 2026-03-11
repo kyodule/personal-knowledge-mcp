@@ -20,7 +20,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.56.0",
+    "@larksuiteoapi/node-sdk": "^1.59.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "@types/adm-zip": "^0.5.7",
     "@types/xml2js": "^0.4.14",
