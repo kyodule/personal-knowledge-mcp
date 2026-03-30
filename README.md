@@ -13,7 +13,8 @@
 - 本地 embedding 模型（all-MiniLM-L6-v2，384 维，零 API 调用）
 - 增量索引（基于文件 mtime，跳过未变更文件）
 - 死文档自动清理
-- 搜索结果返回高亮 snippet
+- 搜索结果返回查询词定位 snippet（自动居中到匹配位置）
+- 同一文档返回多个命中片段（最多 3 个 chunk）
 - 标题匹配 10x 加权
 - 飞书集成：云文档、多维表格、电子表格、知识库读写
 - MCP 协议标准接口
@@ -110,13 +111,15 @@ npm start
 
 ```
 查询 → jieba 分词 → FTS5 BM25 搜索 ─┐
-                                       ├→ RRF 融合排名 → 去重 → 返回 Top-K
+                                       ├→ RRF 融合排名 → 每文档最多3片段 → Top-K
 查询 → embedding 模型 → sqlite-vec KNN ┘
 ```
 
 - 关键词搜索擅长精确匹配（函数名、错误码、专有名词）
 - 向量搜索擅长语义匹配（"怎么处理超时" 匹配 "timeout handling"）
 - RRF (Reciprocal Rank Fusion) 融合两者排名，无需训练数据
+- 同一文档最多返回 3 个不同片段，避免遗漏长文档中的多处命中
+- Snippet 自动定位到查询词出现位置，而非固定截取开头
 
 ## MCP 工具列表
 
@@ -173,7 +176,7 @@ personal-knowledge-mcp/
 │       ├── file-parser.ts      # 文件解析（PDF/DOCX/PPTX）
 │       ├── tokenizer.ts        # 中文分词（jieba）
 │       ├── chunker.ts          # 文档分块
-│       └── embedder.ts         # 本地 embedding 模型
+│       └── embedder.ts         # 本地 embedding 模型（批量推理）
 ├── data/
 │   └── knowledge.db            # SQLite 数据库（自动生成）
 ├── config.json                 # 配置文件
@@ -196,6 +199,8 @@ Node.js v24 + onnxruntime-node 存在线程 mutex 兼容性问题，进程退出
 ## 常见问题
 
 **索引速度慢？** 减少 `watch_paths` 范围，用 `exclude_patterns` 排除大目录。增量索引只处理变更文件。
+
+**Embedding 生成慢？** `npm run embed` 使用批量推理（每批 50 条），比逐条处理快数倍。首次运行需下载模型（~80MB），后续使用缓存。
 
 **搜索不到文档？** 确认已运行 `npm run index`，检查 `file_extensions` 是否包含目标文件类型。
 
