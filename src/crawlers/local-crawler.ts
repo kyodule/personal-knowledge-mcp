@@ -9,7 +9,7 @@ import { KnowledgeDatabase } from '../storage/database.js';
 
 /**
  * 本地文档爬虫
- * 负责扫描本地文件系统并索引文档
+ * 支持增量索引和死文档清理
  */
 export class LocalCrawler {
   private parser: FileParser;
@@ -17,7 +17,7 @@ export class LocalCrawler {
   private watchPaths: string[];
   private fileExtensions: string[];
   private excludePatterns: string[];
-  private watcher?: any; // chokidar.FSWatcher
+  private watcher?: any;
   private log: (message: string) => void;
 
   constructor(
@@ -32,22 +32,33 @@ export class LocalCrawler {
     this.watchPaths = watchPaths;
     this.fileExtensions = fileExtensions;
     this.excludePatterns = excludePatterns;
-    // 如果提供了 logger 就用，否则静默
     this.log = logger || (() => {});
   }
 
   /**
-   * 扫描并索引所有文档
-   * @returns 索引的文档数量
+   * 生成文件路径对应的文档 ID
+   */
+  static fileId(filePath: string): string {
+    return crypto.createHash('md5').update(filePath).digest('hex');
+  }
+
+  /**
+   * 扫描并索引所有文档（增量模式）
+   * 只处理新文件和修改过的文件，并清理已删除的文件
    */
   async indexAll(): Promise<number> {
     this.log('开始扫描本地文档...');
+
+    // 获取数据库中已有的本地文档信息
+    const existingDocs = this.database.getDocumentSyncInfo('local');
+    const seenPaths = new Set<string>();
+
     const documents: Document[] = [];
+    let skippedCount = 0;
 
     for (const watchPath of this.watchPaths) {
       this.log(`扫描目录: ${watchPath}`);
 
-      // 检查路径是否存在
       try {
         await fs.access(watchPath);
       } catch {
@@ -55,10 +66,7 @@ export class LocalCrawler {
         continue;
       }
 
-      // 构建 glob 模式
-      const patterns = this.fileExtensions.map(
-        ext => `${watchPath}/**/*${ext}`
-      );
+      const patterns = this.fileExtensions.map(ext => `${watchPath}/**/*${ext}`);
 
       for (const pattern of patterns) {
         const files = await glob(pattern, {
@@ -67,11 +75,24 @@ export class LocalCrawler {
           absolute: true,
         });
 
-        this.log(`找到 ${files.length} 个 ${path.extname(pattern)} 文件`);
-
         for (const filePath of files) {
+          seenPaths.add(filePath);
+
           try {
-            const doc = await this.processFile(filePath);
+            // 增量检查：比较文件 mtime 和 last_synced
+            const stats = await fs.stat(filePath);
+            const existing = existingDocs.get(filePath);
+
+            if (existing) {
+              const lastSynced = new Date(existing.last_synced).getTime();
+              const mtime = stats.mtime.getTime();
+              if (mtime <= lastSynced) {
+                skippedCount++;
+                continue;
+              }
+            }
+
+            const doc = await this.processFile(filePath, stats);
             documents.push(doc);
           } catch (error) {
             this.log(`处理文件失败 ${filePath}: ${error}`);
@@ -80,26 +101,46 @@ export class LocalCrawler {
       }
     }
 
-    // 批量插入数据库
-    this.log(`正在保存 ${documents.length} 个文档到数据库...`);
-    this.database.batchUpsert(documents);
-    this.log('索引完成！');
+    // 批量写入变更的文档
+    if (documents.length > 0) {
+      this.log(`正在保存 ${documents.length} 个新/变更文档到数据库...`);
+      this.database.batchUpsert(documents);
+    }
+
+    if (skippedCount > 0) {
+      this.log(`跳过 ${skippedCount} 个未变更文档`);
+    }
+
+    // 死文档清理：删除数据库中存在但文件系统中已不存在的文档
+    const staleIds: string[] = [];
+    for (const [filePath] of existingDocs) {
+      if (!seenPaths.has(filePath)) {
+        staleIds.push(LocalCrawler.fileId(filePath));
+        this.log(`清理已删除文件: ${filePath}`);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      this.database.batchDeleteDocuments(staleIds);
+      this.log(`清理了 ${staleIds.length} 个不存在的文档`);
+    }
+
+    const totalInDb = documents.length + (existingDocs.size - staleIds.length);
+    this.log(`索引完成！新增/更新 ${documents.length}，清理 ${staleIds.length}，数据库共 ~${totalInDb} 个本地文档`);
 
     return documents.length;
   }
 
   /**
    * 处理单个文件
-   * @param filePath 文件路径
-   * @returns 文档对象
    */
-  private async processFile(filePath: string): Promise<Document> {
+  private async processFile(filePath: string, stats?: import('fs').Stats): Promise<Document> {
     const content = await this.parser.parseFile(filePath);
-    const stats = await fs.stat(filePath);
+    if (!stats) {
+      stats = await fs.stat(filePath);
+    }
     const title = this.parser.extractTitle(filePath, content);
-
-    // 生成文档 ID（基于文件路径的哈希）
-    const id = crypto.createHash('md5').update(filePath).digest('hex');
+    const id = LocalCrawler.fileId(filePath);
 
     return {
       id,
@@ -117,22 +158,14 @@ export class LocalCrawler {
     };
   }
 
-  /**
-   * 截断过长的内容（避免数据库过大）
-   * @param content 原始内容
-   * @returns 截断后的内容
-   */
   private truncateContent(content: string): string {
-    const MAX_LENGTH = 100000; // 10万字符
+    const MAX_LENGTH = 100000;
     if (content.length > MAX_LENGTH) {
       return content.substring(0, MAX_LENGTH) + '\n\n... (内容已截断)';
     }
     return content;
   }
 
-  /**
-   * 启动文件监听（实时同步）
-   */
   startWatching(): void {
     if (this.watcher) {
       this.log('文件监听已启动');
@@ -144,7 +177,7 @@ export class LocalCrawler {
     this.watcher = chokidar.watch(this.watchPaths, {
       ignored: this.excludePatterns,
       persistent: true,
-      ignoreInitial: true, // 忽略初始扫描
+      ignoreInitial: true,
       awaitWriteFinish: {
         stabilityThreshold: 2000,
         pollInterval: 100,
@@ -177,7 +210,7 @@ export class LocalCrawler {
       .on('unlink', (filePath: string) => {
         if (this.shouldProcess(filePath)) {
           this.log(`文件删除: ${filePath}`);
-          const id = crypto.createHash('md5').update(filePath).digest('hex');
+          const id = LocalCrawler.fileId(filePath);
           this.database.deleteDocument(id);
         }
       })
@@ -188,9 +221,6 @@ export class LocalCrawler {
     this.log('文件监听已启动');
   }
 
-  /**
-   * 停止文件监听
-   */
   async stopWatching(): Promise<void> {
     if (this.watcher) {
       await this.watcher.close();
@@ -199,11 +229,6 @@ export class LocalCrawler {
     }
   }
 
-  /**
-   * 判断文件是否应该被处理
-   * @param filePath 文件路径
-   * @returns 是否处理
-   */
   private shouldProcess(filePath: string): boolean {
     const ext = path.extname(filePath).toLowerCase();
     return this.fileExtensions.includes(ext);

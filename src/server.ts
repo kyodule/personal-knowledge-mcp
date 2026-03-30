@@ -8,7 +8,7 @@ import {
 import * as lark from '@larksuiteoapi/node-sdk';
 import { KnowledgeDatabase } from './storage/database.js';
 import { LocalCrawler } from './crawlers/local-crawler.js';
-import { Config, SearchFilters } from './types.js';
+import { Config, SearchFilters, SearchResult } from './types.js';
 import {
   getFeishuClient,
   resetFeishuClient,
@@ -620,7 +620,16 @@ export class KnowledgeMCPServer {
     }
 
     const filters: SearchFilters | undefined = source ? { source } : undefined;
-    const results = this.database.searchDocuments(query, filters, limit);
+
+    // Generate query embedding for hybrid search
+    let queryEmbedding: Buffer | undefined;
+    try {
+      const { embed, vecToBuffer } = await import('./utils/embedder.js');
+      const vec = await embed(query);
+      queryEmbedding = vecToBuffer(vec);
+    } catch { /* fallback to BM25 only */ }
+
+    const results: SearchResult[] = this.database.searchDocuments(query, filters, limit, queryEmbedding);
 
     return {
       content: [
@@ -629,12 +638,13 @@ export class KnowledgeMCPServer {
           text: JSON.stringify(
             {
               total: results.length,
-              documents: results.map((doc) => ({
-                id: doc.id,
-                title: doc.title,
-                source: doc.source,
-                preview: doc.content.substring(0, 200) + '...',
-                metadata: doc.metadata,
+              documents: results.map((r) => ({
+                id: r.id,
+                title: r.title,
+                source: r.source,
+                snippet: r.snippet,
+                chunk_index: r.chunk_index,
+                metadata: r.metadata,
               })),
             },
             null,

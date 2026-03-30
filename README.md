@@ -1,32 +1,34 @@
 # Personal Knowledge MCP Server
 
-个人知识库 MCP 服务器 - 将本地文档、飞书、企业微信文档统一索引，通过 MCP 协议提供给 AI 客户端（如 Cherry Studio）访问。
+个人知识库 MCP 服务器 — 将本地文档、飞书文档统一索引，通过 MCP 协议提供给 AI 客户端访问。
 
-## ✨ 功能特性
+支持 BM25 关键词搜索 + 向量语义搜索的混合检索（Hybrid Search），基于 RRF 融合排名，全部运行在单个 SQLite 文件中，零外部依赖。
 
-**Phase 1 (已实现)**
-- ✅ 本地文档索引（支持 TXT, MD, PDF, DOCX, PPTX）
-- ✅ 全文搜索（SQLite FTS5）
-- ✅ MCP 协议接口
-- ✅ 文档元数据管理
+## 功能特性
 
-**Phase 2-3 (规划中)**
-- 🚧 飞书文档同步
-- 🚧 企业微信文档同步
-- 🚧 语义搜索（向量化）
+- 本地文档索引（TXT, MD, PDF, DOCX, PPTX）
+- 中文分词优化（jieba）
+- 文档智能分块（按标题/段落切分）
+- 混合搜索：FTS5 BM25 关键词检索 + sqlite-vec 向量 KNN 检索 + RRF 融合
+- 本地 embedding 模型（all-MiniLM-L6-v2，384 维，零 API 调用）
+- 增量索引（基于文件 mtime，跳过未变更文件）
+- 死文档自动清理
+- 搜索结果返回高亮 snippet
+- 标题匹配 10x 加权
+- 飞书集成：云文档、多维表格、电子表格、知识库读写
+- MCP 协议标准接口
 
-## 🚀 快速开始
+## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-cd personal-knowledge-mcp
 npm install
 ```
 
 ### 2. 配置
 
-编辑 `config.json`，设置你想要索引的文档路径：
+编辑 `config.json`：
 
 ```json
 {
@@ -36,11 +38,13 @@ npm install
       "~/Documents",
       "~/Desktop"
     ],
-    "file_extensions": [".txt", ".md", ".pdf", ".docx"],
-    "exclude_patterns": [
-      "**/node_modules/**",
-      "**/.git/**"
-    ]
+    "file_extensions": [".txt", ".md", ".pdf", ".docx", ".pptx"],
+    "exclude_patterns": ["**/node_modules/**", "**/.git/**"]
+  },
+  "feishu": {
+    "enabled": false,
+    "app_id": "",
+    "app_secret": ""
   },
   "database": {
     "path": "./data/knowledge.db"
@@ -48,226 +52,157 @@ npm install
 }
 ```
 
-### 3. 构建项目
+### 3. 构建
 
 ```bash
 npm run build
 ```
 
-### 4. 索引本地文档
+### 4. 索引文档
 
 ```bash
 npm run index
 ```
 
-输出示例：
-```
-开始扫描本地文档...
-扫描目录: ~/Documents
-找到 45 个 .md 文件
-找到 12 个 .pdf 文件
-正在保存 57 个文档到数据库...
-索引完成！
+增量模式：只处理新增/修改的文件，自动清理已删除文件的索引。
 
-数据库统计:
-  local: 57 个文档
+### 5. 生成向量索引（可选但推荐）
+
+```bash
+npm run embed
 ```
 
-### 5. 配置 Cherry Studio
+首次运行会自动下载 embedding 模型（~80MB），后续运行使用缓存。生成完成后搜索自动启用混合模式（BM25 + 向量）。
 
-在 Cherry Studio 中添加 MCP Server：
+跳过此步骤时搜索仍可正常工作，只是退化为纯关键词搜索。
 
-**方法 1: 通过 UI 配置**
-1. 打开 Cherry Studio 设置
-2. 找到 "MCP Servers" 或 "Model Context Protocol"
-3. 添加新的 Server
-4. 配置如下：
+### 6. 启动 MCP Server
+
+```bash
+npm start
+```
+
+### 7. 配置 AI 客户端
+
+在 Cherry Studio / Cursor / 其他 MCP 客户端中添加：
 
 ```json
 {
   "personal-knowledge": {
     "command": "node",
-    "args": ["/path/to/personal-knowledge-mcp/dist/index.js"],
-    "cwd": "/path/to/personal-knowledge-mcp"
+    "args": ["/absolute/path/to/personal-knowledge-mcp/dist/index.js"],
+    "cwd": "/absolute/path/to/personal-knowledge-mcp"
   }
 }
 ```
 
-**方法 2: 直接编辑配置文件**
+## 命令参考
 
-找到 Cherry Studio 的配置文件（通常在 `~/.cherry-studio/config.json` 或应用设置目录），添加：
+| 命令 | 说明 |
+|------|------|
+| `npm run build` | 编译 TypeScript |
+| `npm run dev` | 开发模式（watch 编译） |
+| `npm run index` | 索引本地文档（增量） |
+| `npm run embed` | 生成文档 embedding 向量 |
+| `npm start` | 启动 MCP Server |
 
-```json
-{
-  "mcpServers": {
-    "personal-knowledge": {
-      "command": "node",
-      "args": ["/path/to/personal-knowledge-mcp/dist/index.js"],
-      "cwd": "/path/to/personal-knowledge-mcp"
-    }
-  }
-}
-```
-
-### 6. 在 Cherry Studio 中使用
-
-重启 Cherry Studio 后，你可以在对话中使用以下方式访问知识库：
+## 搜索架构
 
 ```
-请帮我搜索知识库中关于"TypeScript 泛型"的文档
+查询 → jieba 分词 → FTS5 BM25 搜索 ─┐
+                                       ├→ RRF 融合排名 → 去重 → 返回 Top-K
+查询 → embedding 模型 → sqlite-vec KNN ┘
 ```
 
-AI 会自动调用 `search_documents` 工具进行搜索。
+- 关键词搜索擅长精确匹配（函数名、错误码、专有名词）
+- 向量搜索擅长语义匹配（"怎么处理超时" 匹配 "timeout handling"）
+- RRF (Reciprocal Rank Fusion) 融合两者排名，无需训练数据
 
-## 🛠️ MCP 工具列表
+## MCP 工具列表
 
-服务器提供以下 MCP 工具：
+### 知识库工具
 
-### 1. `search_documents`
-搜索知识库中的文档
+| 工具 | 说明 |
+|------|------|
+| `search_documents` | 搜索文档（支持混合检索） |
+| `get_document` | 获取完整文档内容 |
+| `list_documents` | 列出文档（按更新时间排序） |
+| `get_stats` | 获取统计信息 |
+| `sync_local_documents` | 手动触发本地文档同步 |
 
-**参数:**
-- `query` (必填): 搜索关键词
-- `source` (可选): 限定来源 ('local', 'feishu', 'wecom')
-- `limit` (可选): 返回数量，默认 20
+### 飞书工具（需在 config.json 中启用）
 
-**示例:**
-```json
-{
-  "query": "React Hooks",
-  "source": "local",
-  "limit": 10
-}
-```
+| 工具 | 说明 |
+|------|------|
+| `get_bitable_records` | 获取多维表格记录（支持筛选、排序） |
+| `list_bitable_tables` | 列出多维表格中的数据表 |
+| `create_bitable_records` | 创建多维表格记录（批量） |
+| `update_bitable_record` | 更新单条多维表格记录 |
+| `batch_update_bitable_records` | 批量更新多维表格记录 |
+| `delete_bitable_records` | 删除多维表格记录（批量） |
+| `get_wiki_nodes` | 获取知识空间节点列表 |
+| `get_wiki_node_content` | 获取知识库文档内容 |
+| `get_docx_content` | 获取云文档纯文本内容 |
+| `list_drive_files` | 列出云盘文件夹中的文件 |
+| `get_drive_file_content` | 获取云盘文件内容 |
+| `get_sheet_data` | 获取电子表格数据 |
+| `list_sheets` | 列出电子表格工作表 |
+| `write_sheet_data` | 写入电子表格数据 |
+| `append_sheet_data` | 追加电子表格数据 |
 
-### 2. `get_document`
-获取完整文档内容
-
-**参数:**
-- `document_id` (必填): 文档 ID
-
-### 3. `list_documents`
-列出所有文档
-
-**参数:**
-- `source` (可选): 限定来源
-- `limit` (可选): 返回数量，默认 50
-
-### 4. `get_stats`
-获取知识库统计信息
-
-**返回示例:**
-```json
-{
-  "stats": {
-    "local": 57,
-    "feishu": 0,
-    "wecom": 0
-  }
-}
-```
-
-### 5. `sync_local_documents`
-手动触发本地文档同步
-
-## 📁 项目结构
+## 项目结构
 
 ```
 personal-knowledge-mcp/
 ├── src/
-│   ├── index.ts              # 入口文件
-│   ├── server.ts             # MCP Server 实现
-│   ├── types.ts              # TypeScript 类型定义
+│   ├── index.ts                # 入口（动态 import，解决 onnxruntime 线程问题）
+│   ├── server.ts               # MCP Server 实现
+│   ├── types.ts                # TypeScript 类型定义
 │   ├── storage/
-│   │   └── database.ts       # SQLite 数据库管理
+│   │   └── database.ts         # SQLite + FTS5 + sqlite-vec 数据库
 │   ├── crawlers/
-│   │   └── local-crawler.ts  # 本地文档爬虫
+│   │   └── local-crawler.ts    # 本地文档爬虫（增量索引）
+│   ├── feishu/                 # 飞书 API 集成
+│   │   ├── client.ts           # 飞书客户端
+│   │   ├── bitable.ts          # 多维表格
+│   │   ├── sheets.ts           # 电子表格
+│   │   ├── wiki.ts             # 知识库
+│   │   ├── docx.ts             # 云文档
+│   │   └── drive.ts            # 云盘
 │   └── utils/
-│       └── file-parser.ts    # 文件解析器
+│       ├── file-parser.ts      # 文件解析（PDF/DOCX/PPTX）
+│       ├── tokenizer.ts        # 中文分词（jieba）
+│       ├── chunker.ts          # 文档分块
+│       └── embedder.ts         # 本地 embedding 模型
 ├── data/
-│   └── knowledge.db          # SQLite 数据库（自动生成）
-├── config.json               # 配置文件
-├── package.json
-├── tsconfig.json
-└── README.md
+│   └── knowledge.db            # SQLite 数据库（自动生成）
+├── config.json                 # 配置文件
+└── package.json
 ```
 
-## 🔧 常见问题
+## 数据库 Schema
 
-### Q: 索引速度慢？
-A:
-- 减少 `watch_paths` 的范围
-- 使用 `exclude_patterns` 排除大型目录
-- 大型 PDF 文件解析较慢，可以先排除
-
-### Q: 搜索不到文档？
-A:
-1. 确认文档已被索引（运行 `npm run index`）
-2. 检查 `file_extensions` 是否包含你的文件类型
-3. 尝试使用不同的关键词（支持 SQLite FTS5 语法）
-
-### Q: Cherry Studio 连接失败？
-A:
-1. 确认已运行 `npm run build`
-2. 检查配置中的路径是否为**绝对路径**
-3. 查看 Cherry Studio 的日志输出
-
-### Q: 如何更新索引？
-A:
-重新运行 `npm run index` 即可。已存在的文档会被更新，删除的文件会被移除。
-
-## 📈 性能优化建议
-
-1. **定期清理数据库**: 删除不再需要的文档
-2. **合理设置监控路径**: 避免监控整个硬盘
-3. **限制文件大小**: 在 `local-crawler.ts` 中可以添加文件大小限制
-4. **使用 SSD**: 数据库访问速度直接影响搜索性能
-
-## 🛣️ 下一步计划
-
-**Phase 2: 飞书集成**
-1. OAuth 认证
-2. 文档列表获取
-3. 内容下载和解析
-4. 增量同步
-
-**Phase 3: 企业微信集成**
-1. 评估 API 可用性
-2. 实现文件下载
-3. 或采用手动导出方案
-
-**Phase 4: 高级搜索**
-1. 接入本地 Embedding 模型（ollama）
-2. 向量化文档
-3. 语义搜索 + 关键词搜索混合
-
-## 📝 开发说明
-
-```bash
-# 开发模式（自动编译）
-npm run dev
-
-# 手动编译
-npm run build
-
-# 索引文档
-npm run index
-
-# 启动 MCP Server
-npm start
+```
+documents          主文档表（id, source, title, content, metadata）
+chunks             文档分块表（doc_id, chunk_index, content, tokenized_content）
+chunks_fts         FTS5 全文索引（基于分块，中文分词后存储）
+chunks_vec         sqlite-vec 向量索引（384 维 float embedding）
 ```
 
-## ⚠️ 重要提示
+## 已知问题
 
-1. **合规性**: 确保索引企业文档符合公司信息安全政策
-2. **权限**: 某些文档可能需要管理员授权才能访问
-3. **隐私**: 本地数据库包含文档内容，注意保护
-4. **备份**: 定期备份 `data/knowledge.db`
+Node.js v24 + onnxruntime-node 存在线程 mutex 兼容性问题，进程退出时可能出现 `mutex lock failed` 错误。不影响功能，embedding 生成和搜索均正常工作。`index.ts` 已通过动态 import 和 `OMP_NUM_THREADS=1` 环境变量缓解此问题。
 
-## 📄 许可证
+## 常见问题
+
+**索引速度慢？** 减少 `watch_paths` 范围，用 `exclude_patterns` 排除大目录。增量索引只处理变更文件。
+
+**搜索不到文档？** 确认已运行 `npm run index`，检查 `file_extensions` 是否包含目标文件类型。
+
+**如何更新索引？** 重新运行 `npm run index`，增量处理变更文件并自动清理已删除文件。新增文件需再运行 `npm run embed` 生成向量。
+
+**Cherry Studio 连接失败？** 确认已运行 `npm run build`，配置中使用绝对路径。
+
+## 许可证
 
 MIT
-
----
-
-**问题反馈**: 如遇到问题，请检查日志输出并提供详细错误信息。

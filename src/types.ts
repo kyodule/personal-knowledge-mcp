@@ -30,6 +30,30 @@ export interface Document {
 }
 
 /**
+ * 文档分块（用于精细化搜索）
+ */
+export interface DocumentChunk {
+  doc_id: string;
+  chunk_index: number;
+  content: string;
+  tokenized_content: string;
+}
+
+/**
+ * 搜索结果（含 snippet）
+ */
+export interface SearchResult {
+  id: string;
+  source: DocumentSource;
+  source_id: string;
+  title: string;
+  snippet: string;
+  chunk_index?: number;
+  rank: number;
+  metadata: DocumentMetadata;
+}
+
+/**
  * 搜索过滤器
  */
 export interface SearchFilters {

@@ -9,6 +9,7 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "index": "node dist/index.js --index",
+    "embed": "node dist/index.js --embed",
     "sync": "node dist/index.js --sync"
   },
   "keywords": [
@@ -20,8 +21,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "@node-rs/jieba": "^2.0.1",
     "@types/adm-zip": "^0.5.7",
     "@types/xml2js": "^0.4.14",
     "adm-zip": "^0.5.16",
@@ -29,7 +32,9 @@
     "chokidar": "^4.0.3",
     "glob": "^11.0.0",
     "mammoth": "^1.8.0",
+    "onnxruntime-node": "^1.24.3",
     "pdf-parse": "^1.1.1",
+    "sqlite-vec": "^0.1.8",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
