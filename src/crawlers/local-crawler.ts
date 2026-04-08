@@ -132,6 +132,53 @@ export class LocalCrawler {
   }
 
   /**
+   * 索引单个文件（公开方法，供 MCP index_file 工具调用）
+   * 解析文件内容并写入数据库，支持可选的 embedding 生成
+   */
+  async indexFile(filePath: string, generateEmbedding: boolean = false): Promise<{ id: string; title: string; chunks: number }> {
+    const absPath = path.resolve(filePath);
+
+    // 检查文件是否在 watch_paths 范围内
+    const inScope = this.watchPaths.some(wp => absPath.startsWith(wp));
+    if (!inScope) {
+      throw new Error(`文件不在监控目录范围内: ${absPath}`);
+    }
+
+    // 检查文件扩展名
+    if (!this.shouldProcess(absPath)) {
+      throw new Error(`不支持的文件类型: ${path.extname(absPath)}`);
+    }
+
+    await fs.access(absPath);
+    const doc = await this.processFile(absPath);
+    this.database.upsertDocument(doc);
+
+    // 可选：为新文档的 chunks 生成 embedding
+    if (generateEmbedding) {
+      try {
+        const { embedBatch, vecToBuffer } = await import('../utils/embedder.js');
+        const chunks = this.database.getChunksWithoutEmbedding(100);
+        const docChunks = chunks.filter(c => {
+          const chunkDoc = this.database.getChunkDocId(c.id);
+          return chunkDoc === doc.id;
+        });
+        if (docChunks.length > 0) {
+          const texts = docChunks.map(c => c.content.substring(0, 512));
+          const embeddings = await embedBatch(texts);
+          const items = docChunks.map((chunk, i) => ({ chunkId: chunk.id, embedding: embeddings[i] }));
+          this.database.batchInsertEmbeddings(items);
+        }
+      } catch (e) {
+        this.log(`embedding 生成失败（不影响 BM25 搜索）: ${e}`);
+      }
+    }
+
+    const chunkCount = this.database.getDocumentChunkCount(doc.id);
+    this.log(`索引文件完成: ${absPath} (${chunkCount} chunks)`);
+    return { id: doc.id, title: doc.title, chunks: chunkCount };
+  }
+
+  /**
    * 处理单个文件
    */
   private async processFile(filePath: string, stats?: import('fs').Stats): Promise<Document> {

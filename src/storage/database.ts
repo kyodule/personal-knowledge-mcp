@@ -160,6 +160,22 @@ export class KnowledgeDatabase {
     }
   }
 
+  /**
+   * 获取某个 chunk 所属的文档 ID
+   */
+  getChunkDocId(chunkId: number): string | null {
+    const row = this.db.prepare('SELECT doc_id FROM chunks WHERE id = ?').get(chunkId) as any;
+    return row ? row.doc_id : null;
+  }
+
+  /**
+   * 获取某个文档的 chunk 数量
+   */
+  getDocumentChunkCount(docId: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM chunks WHERE doc_id = ?').get(docId) as any;
+    return row.cnt;
+  }
+
   // ==================== Embedding ====================
 
   getChunksWithoutEmbedding(limit: number = 500): Array<{ id: number; content: string }> {

@@ -10,13 +10,14 @@ const CJK_RANGE = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
 
 /**
  * 对文本进行中文分词，返回空格分隔的 token 字符串。
+ * 使用 cutForSearch 获得细粒度分词，与查询侧保持一致，提高召回率。
  * 非 CJK 文本原样保留（FTS5 默认 tokenizer 对英文/数字工作良好）。
  */
 export function tokenize(text: string): string {
   if (!CJK_RANGE.test(text)) {
     return text;
   }
-  const words = jieba.cut(text, true);
+  const words = jieba.cutForSearch(text, true);
   return words.join(' ');
 }
 

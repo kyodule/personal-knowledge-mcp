@@ -159,6 +159,25 @@ export class KnowledgeMCPServer {
             properties: {},
           },
         },
+        {
+          name: 'index_file',
+          description: '索引单个本地文件（增量索引，比全量 sync 快得多）。文件必须在 config.json 的 watch_paths 范围内。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              file_path: {
+                type: 'string',
+                description: '要索引的文件绝对路径',
+              },
+              generate_embedding: {
+                type: 'boolean',
+                description: '是否同时生成 embedding（用于向量搜索），默认 true',
+                default: true,
+              },
+            },
+            required: ['file_path'],
+          },
+        },
       ];
 
       // 如果飞书已启用，添加飞书相关工具
@@ -661,6 +680,9 @@ export class KnowledgeMCPServer {
           case 'sync_local_documents':
             return await this.handleSyncLocal();
 
+          case 'index_file':
+            return await this.handleIndexFile(args);
+
           // 飞书相关工具（统一 retry 包装）
           case 'get_bitable_records':
             return await this.withFeishuRetry(() => this.handleGetBitableRecords(args));
@@ -870,6 +892,36 @@ export class KnowledgeMCPServer {
         {
           type: 'text',
           text: `本地文档同步完成，共索引 ${count} 个文档`,
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理单文件索引请求
+   */
+  private async handleIndexFile(args: any) {
+    if (!this.localCrawler) {
+      throw new Error('本地文档爬虫未启用');
+    }
+
+    const { file_path, generate_embedding = true } = args;
+    if (!file_path || typeof file_path !== 'string') {
+      throw new Error('file_path 参数必须是非空字符串');
+    }
+
+    const result = await this.localCrawler.indexFile(file_path, generate_embedding);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            message: `文件索引完成`,
+            id: result.id,
+            title: result.title,
+            chunks: result.chunks,
+          }, null, 2),
         },
       ],
     };
