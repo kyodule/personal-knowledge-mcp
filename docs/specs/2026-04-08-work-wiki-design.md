@@ -1,7 +1,7 @@
 # Work Wiki — 基于 LLM Wiki 模式的工作知识库
 
 **日期**: 2026-04-08
-**状态**: Draft
+**状态**: Implemented (v1)
 **灵感来源**: Karpathy LLM Wiki (gist, 2026-04-04)
 
 ## 1. 背景与目标
@@ -19,7 +19,7 @@
 1. **统一入口**：所有知识操作都通过给 Droid 下指令完成
 2. **自动编译**：LLM 把零散原始资料编译成结构化、互相链接的 Markdown Wiki
 3. **知识复利**：每次查询和探索都能沉淀为新的知识页面
-4. **零代码改造**：不修改 MCP 代码，利用 Orchids 现有工具 + AGENTS.md Schema 实现
+4. **最小代码改造**：MCP 侧仅新增 `index_file` 增量索引工具和 tokenizer 修复，其余通过 AGENTS.md Schema 实现
 
 ### 非目标
 
@@ -34,9 +34,10 @@
     ↓
 Droid（LLM 编译器，遵循 AGENTS.md 规则）
     ↓ 调用
-MCP 工具层（已有，不改代码）
+MCP 工具层
     ├── 飞书 API：读文档、操作多维表格
     ├── 本地索引：搜索 wiki/ 和 raw/ 下的文件
+    ├── index_file：单文件增量索引（🆕 本次新增）
     └── content-extract skill：抓取外部网页
     ↓
 Obsidian vault（~/Documents/myob/）
@@ -109,7 +110,8 @@ Obsidian vault（~/Documents/myob/）
 1. **判断来源**：飞书链接 → 调 MCP 飞书工具；外部链接 → 调 content-extract skill
 2. **保存 raw 文件**：写入 `raw/{来源类型}/{YYYY-MM-DD}-{标题slug}.md`，文件顶部注明原始链接、采集日期、来源
 3. **登记多维表格**：调 MCP `create_bitable_records`，状态=已收录
-4. **执行 Ingest**：立即进入编译流程
+4. **增量索引**：调 MCP `index_file` 索引新写入的 raw 文件，确保立即可被搜索到
+5. **执行 Ingest**：立即进入编译流程
 
 支持单篇和批量：
 - 单篇：`"把这个存进知识库：{链接}"`
@@ -135,6 +137,7 @@ Obsidian vault（~/Documents/myob/）
 6. 更新 `wiki/index.md`：对应分类下新增条目
 7. 追加 `wiki/log.md`：`## [YYYY-MM-DD] ingest | {标题}`，含摘要 + 影响页面列表
 8. 回填飞书多维表格：状态→已编译，填入摘要
+9. **增量索引**：对所有新建/更新的 wiki 页面调用 `index_file`，确保可被搜索到
 
 ### 5.3 查询（Query）
 
@@ -197,7 +200,7 @@ tags: [标签1, 标签2]
 - 页面格式约定
 - 禁止事项（不改 raw/，不动已有目录）
 
-## 8. 依赖的现有工具（均不需改造）
+## 8. 依赖的工具
 
 | 工具 | 来源 | 用途 |
 |------|------|------|
@@ -208,11 +211,12 @@ tags: [标签1, 标签2]
 | `update_bitable_record` | personal-knowledge-mcp | 更新多维表格 |
 | `get_wiki_nodes` | personal-knowledge-mcp | 列知识空间文档 |
 | `get_sheet_data` | personal-knowledge-mcp | 读电子表格 |
-| `search_documents` | personal-knowledge-mcp | 搜索本地知识库 |
-| `sync_local_documents` | personal-knowledge-mcp | 触发重新索引 |
+| `search_documents` | personal-knowledge-mcp | 搜索本地知识库（BM25 + 向量混合搜索） |
+| `index_file` | personal-knowledge-mcp (🆕) | 单文件增量索引，写入文件后立即调用，确保可被搜索 |
+| `sync_local_documents` | personal-knowledge-mcp | 全量重新索引（仅在需要重建全部索引时使用） |
 | content-extract skill | Droid skill | 抓取外部网页内容 |
 | Create 工具 | Droid 内置 | 创建本地文件 |
-| Read 工具 | Orchids 内置 | 读取本地文件 |
+| Read 工具 | Droid 内置 | 读取本地文件 |
 
 ## 9. 实施步骤
 
@@ -228,7 +232,32 @@ tags: [标签1, 标签2]
 
 **总计**：约 30 分钟可完成搭建并验证。
 
-## 10. 后续扩展方向（不在本次范围）
+## 10. 实施过程中的 MCP 改进（2026-04-08）
+
+在搭建 Work Wiki 并进行首次测试时，发现了两个影响搜索可用性的问题，已修复并合入主分支：
+
+### 10.1 新增 `index_file` 增量索引工具
+
+**问题**：MCP 的文档索引依赖 `sync_local_documents` 全量扫描，新写入 `raw/` 或 `wiki/` 的文件在下次 sync 之前无法被搜索到。首次测试时，刚收录的飞书文档完全搜不到。
+
+**方案**：在 MCP 侧新增 `index_file` 工具，接受单个文件路径，立即解析、分 chunk、写入 FTS5 索引并可选生成 embedding。Droid 在 Collect 和 Ingest 流程中写入文件后立即调用此工具，实现秒级可搜索。
+
+**改动文件**：
+- `src/crawlers/local-crawler.ts` — 新增 `indexFile()` 公开方法
+- `src/storage/database.ts` — 新增 `getChunkDocId()` 和 `getDocumentChunkCount()` 辅助方法
+- `src/server.ts` — 注册 `index_file` 工具定义和 handler
+
+### 10.2 修复 tokenizer 文档/查询不对称问题
+
+**问题**：文档侧使用 `jieba.cut`（粗粒度分词），查询侧使用 `jieba.cutForSearch`（细粒度分词）。例如"九宫格"在文档中被保留为一个完整 token，但查询时被拆为"九宫 宫格 九宫格"三个 token。FTS5 MATCH 默认 AND 逻辑要求所有 token 都匹配，导致"九宫"和"宫格"在文档索引中找不到，搜索失败。
+
+**方案**：将文档侧分词也改为 `cutForSearch`，与查询侧保持一致。细粒度分词同时包含子词和完整词，提高召回率且不损失精确匹配能力。
+
+**改动文件**：`src/utils/tokenizer.ts`
+
+**注意**：此修复影响 FTS5 索引的分词结果。已索引的旧文档需要重新运行 `npm run index` 重建索引，否则部分包含复合词的旧文档可能存在搜索遗漏。
+
+## 11. 后续扩展方向（不在本次范围）
 
 - **企微接入**：通过企微会话存档 API 提取聊天中的文档链接
 - **定时同步**：cron 定期调 Droid 处理飞书知识空间的增量更新
