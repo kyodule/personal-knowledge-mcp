@@ -18,6 +18,10 @@ import {
   updateBitableRecord,
   batchUpdateBitableRecords,
   deleteBitableRecords,
+  listBitableFields,
+  createBitableField,
+  updateBitableField,
+  deleteBitableField,
   getWikiNodes,
   getWikiNodeContent,
   extractDocxContent,
@@ -517,6 +521,118 @@ export class KnowledgeMCPServer {
               },
               required: ['app_token', 'table_id', 'record_ids'],
             },
+          },
+          {
+            name: 'list_bitable_fields',
+            description: '列出飞书多维表格的所有字段（列）定义，返回字段 ID、名称、类型等信息',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+              },
+              required: ['app_token', 'table_id'],
+            },
+          },
+          {
+            name: 'create_bitable_field',
+            description: '在飞书多维表格中创建新字段（列）。常用 type：1=文本, 3=单选, 5=日期, 15=URL',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                field_name: {
+                  type: 'string',
+                  description: '字段名称',
+                },
+                type: {
+                  type: 'number',
+                  description: '字段类型：1=文本, 2=数字, 3=单选, 4=多选, 5=日期, 7=复选框, 15=URL',
+                },
+                description: {
+                  type: 'string',
+                  description: '字段描述（可选）',
+                },
+                property: {
+                  type: 'object',
+                  description: '字段属性（可选），如单选的 options: [{name: "选项1"}, {name: "选项2"}]',
+                },
+              },
+              required: ['app_token', 'table_id', 'field_name', 'type'],
+            },
+          },
+          {
+            name: 'update_bitable_field',
+            description: '更新飞书多维表格字段（重命名、修改属性等）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                field_id: {
+                  type: 'string',
+                  description: '要更新的字段 ID',
+                },
+                field_name: {
+                  type: 'string',
+                  description: '新的字段名称（可选）',
+                },
+                type: {
+                  type: 'number',
+                  description: '新的字段类型（可选）',
+                },
+                description: {
+                  type: 'string',
+                  description: '新的字段描述（可选）',
+                },
+                property: {
+                  type: 'object',
+                  description: '新的字段属性（可选）',
+                },
+              },
+              required: ['app_token', 'table_id', 'field_id'],
+            },
+          },
+          {
+            name: 'delete_bitable_field',
+            description: '删除飞书多维表格中的字段（列）',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                app_token: {
+                  type: 'string',
+                  description: '多维表格的 app_token',
+                },
+                table_id: {
+                  type: 'string',
+                  description: '数据表 ID',
+                },
+                field_id: {
+                  type: 'string',
+                  description: '要删除的字段 ID',
+                },
+              },
+              required: ['app_token', 'table_id', 'field_id'],
+            },
           }
         );
       }
@@ -591,6 +707,18 @@ export class KnowledgeMCPServer {
 
           case 'delete_bitable_records':
             return await this.withFeishuRetry(() => this.handleDeleteBitableRecords(args));
+
+          case 'list_bitable_fields':
+            return await this.withFeishuRetry(() => this.handleListBitableFields(args));
+
+          case 'create_bitable_field':
+            return await this.withFeishuRetry(() => this.handleCreateBitableField(args));
+
+          case 'update_bitable_field':
+            return await this.withFeishuRetry(() => this.handleUpdateBitableField(args));
+
+          case 'delete_bitable_field':
+            return await this.withFeishuRetry(() => this.handleDeleteBitableField(args));
 
           default:
             throw new Error(`未知工具: ${name}`);
@@ -1130,6 +1258,102 @@ export class KnowledgeMCPServer {
     }
 
     const result = await deleteBitableRecords(client, { app_token, table_id, record_ids });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理列出多维表格字段
+   */
+  private async handleListBitableFields(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id } = args;
+
+    if (!app_token || !table_id) {
+      throw new Error('app_token 和 table_id 参数必须提供');
+    }
+
+    const fields = await listBitableFields(client, app_token, table_id);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ total: fields.length, fields }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理创建多维表格字段
+   */
+  private async handleCreateBitableField(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, field_name, type, description, property } = args;
+
+    if (!app_token || !table_id || !field_name || type === undefined) {
+      throw new Error('app_token、table_id、field_name 和 type 参数必须提供');
+    }
+
+    const field = await createBitableField(client, {
+      app_token, table_id, field_name, type, description, property,
+    });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(field, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理更新多维表格字段
+   */
+  private async handleUpdateBitableField(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, field_id, field_name, type: fieldType, description, property } = args;
+
+    if (!app_token || !table_id || !field_id) {
+      throw new Error('app_token、table_id 和 field_id 参数必须提供');
+    }
+
+    const field = await updateBitableField(client, {
+      app_token, table_id, field_id, field_name, type: fieldType, description, property,
+    });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(field, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理删除多维表格字段
+   */
+  private async handleDeleteBitableField(args: any) {
+    const client = this.ensureFeishuClient();
+    const { app_token, table_id, field_id } = args;
+
+    if (!app_token || !table_id || !field_id) {
+      throw new Error('app_token、table_id 和 field_id 参数必须提供');
+    }
+
+    const result = await deleteBitableField(client, { app_token, table_id, field_id });
 
     return {
       content: [
