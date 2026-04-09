@@ -107,8 +107,8 @@ Obsidian vault（~/Documents/myob/）
 **触发**：用户给 Orchids 一个链接 + 指令
 
 **流程**：
-1. **判断来源**：飞书链接 → 调 MCP 飞书工具；外部链接 → 调 content-extract skill
-2. **保存 raw 文件**：写入 `raw/{来源类型}/{YYYY-MM-DD}-{标题slug}.md`，文件顶部注明原始链接、采集日期、来源
+1. **判断来源**：飞书链接 → 调 MCP 飞书工具；微信公众号链接 → 用 `wechat-article-to-markdown`；其他外部链接 → 调 content-extract skill
+2. **保存 raw 文件**：写入 `raw/{来源类型}/{YYYY-MM-DD}-{标题slug}.md`（或含 `images/` 的目录），文件顶部注明原始链接、采集日期、来源
 3. **登记多维表格**：调 MCP `create_bitable_records`，状态=已收录
 4. **增量索引**：调 MCP `index_file` 索引新写入的 raw 文件，确保立即可被搜索到
 5. **执行 Ingest**：立即进入编译流程
@@ -214,6 +214,7 @@ tags: [标签1, 标签2]
 | `search_documents` | personal-knowledge-mcp | 搜索本地知识库（BM25 + 向量混合搜索） |
 | `index_file` | personal-knowledge-mcp (🆕) | 单文件增量索引，写入文件后立即调用，确保可被搜索 |
 | `sync_local_documents` | personal-knowledge-mcp | 全量重新索引（仅在需要重建全部索引时使用） |
+| `wechat-article-to-markdown` | CLI 工具 (pipx) | 微信公众号文章抓取（Camoufox 反爬 + 图片本地化） |
 | content-extract skill | Droid skill | 抓取外部网页内容 |
 | Create 工具 | Droid 内置 | 创建本地文件 |
 | Read 工具 | Droid 内置 | 读取本地文件 |
