@@ -408,6 +408,20 @@ export class KnowledgeDatabase {
     return map;
   }
 
+  /**
+   * 按 source_id LIKE 模式过滤文档（用于 P0-3 lint_duplicates 等按路径前缀分组的场景）。
+   * pattern 示例: "%/wiki/concepts/%"
+   */
+  getDocumentsByPathLike(pattern: string, source: string = 'local'): Document[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM documents WHERE source = ? AND source_id LIKE ? ORDER BY source_id ASC'
+    ).all(source, pattern) as any[];
+    return rows.map(row => ({
+      id: row.id, source: row.source, source_id: row.source_id, title: row.title,
+      content: row.content, metadata: JSON.parse(row.metadata), last_synced: row.last_synced,
+    }));
+  }
+
   getStats(): Record<string, number> {
     const rows = this.db.prepare('SELECT source, COUNT(*) as count FROM documents GROUP BY source').all() as any[];
     const stats: Record<string, number> = {};

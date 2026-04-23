@@ -8,6 +8,7 @@ import {
 import * as lark from '@larksuiteoapi/node-sdk';
 import { KnowledgeDatabase } from './storage/database.js';
 import { LocalCrawler } from './crawlers/local-crawler.js';
+import { lintDuplicates } from './retrieval/lint.js';
 import { Config, SearchFilters, SearchResult } from './types.js';
 import {
   getFeishuClient,
@@ -178,6 +179,35 @@ export class KnowledgeMCPServer {
               },
             },
             required: ['file_path'],
+          },
+        },
+        {
+          name: 'lint_duplicates',
+          description: '检测知识库中近似重复的文档（基于文档级 embedding 余弦相似度 + 标题 bigram Jaccard）。用于 wiki concepts/entities 去重。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path_like: {
+                type: 'string',
+                description: 'source_id 的 LIKE 模式，如 "%/wiki/concepts/%" 或 "%/wiki/entities/%"',
+              },
+              threshold: {
+                type: 'number',
+                description: '语义相似度阈值（0-1），默认 0.85',
+                default: 0.85,
+              },
+              limit: {
+                type: 'number',
+                description: '返回候选对的最大数量，默认 50',
+                default: 50,
+              },
+              max_chars: {
+                type: 'number',
+                description: '文档级 embedding 截断字符数，默认 2000',
+                default: 2000,
+              },
+            },
+            required: ['path_like'],
           },
         },
       ];
@@ -711,6 +741,9 @@ export class KnowledgeMCPServer {
           case 'index_file':
             return await this.handleIndexFile(args);
 
+          case 'lint_duplicates':
+            return await this.handleLintDuplicates(args);
+
           // 飞书相关工具（统一 retry 包装）
           case 'get_bitable_records':
             return await this.withFeishuRetry(() => this.handleGetBitableRecords(args));
@@ -956,6 +989,30 @@ export class KnowledgeMCPServer {
             title: result.title,
             chunks: result.chunks,
           }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理近似重复检测请求 (P0-3)
+   */
+  private async handleLintDuplicates(args: any) {
+    const { path_like, threshold, limit, max_chars } = args || {};
+    if (!path_like || typeof path_like !== 'string') {
+      throw new Error('path_like 参数必须是非空字符串，例如 "%/wiki/concepts/%"');
+    }
+    const result = await lintDuplicates(this.database, {
+      pathLike: path_like,
+      threshold,
+      limit,
+      maxChars: max_chars,
+    });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };
