@@ -3,6 +3,10 @@
 **日期**: 2026-04-08
 **架构**: Karpathy LLM Wiki 模式 + Obsidian + 飞书 + MCP
 
+> 这是 Work Wiki 工作流手册，不是整个仓库的总状态页。
+>
+> 项目整体现状、能力边界和当前代码现实，以 [`PROJECT_STATUS.md`](../PROJECT_STATUS.md) 为准。
+
 ## 概述
 
 Work Wiki 是一套基于 LLM 增量编译的个人工作知识库系统。用户负责决定收录什么，LLM（Droid/Orchids）负责采集、编译、整理和维护。所有知识操作通过自然语言指令完成，无需手动整理文档。
@@ -25,7 +29,8 @@ Droid / Orchids（LLM 编译器，遵循 AGENTS.md 规则）
 │  │   ├── 飞书 API           → 多维表格 CRUD        │
 │  │   ├── 本地索引           → BM25+向量混合搜索     │
 │  │   ├── index_file         → 单文件增量索引 🆕    │
-│  │   └── 飞书知识库         → 节点遍历/内容预览     │
+│  │   ├── list_wiki_spaces   → 发现可用知识空间 🆕  │
+│  │   └── 飞书知识库         → 递归遍历/内容获取     │
 │  ├── content-extract        → 外部网页抓取          │
 │  └── agent-browser          → 反爬兜底(手动验证)    │
 └──────────────────────────────────────────────────┘
@@ -63,7 +68,7 @@ Obsidian vault（~/Documents/myob/）
 |------|------|---------|
 | **feishu-docx** (Python CLI) | 飞书文档导出为高质量 Markdown | 收录飞书文档时，保留标题、表格、加粗、图片等格式 |
 | **wechat-article-to-markdown** (pipx) | 微信公众号文章抓取 | 收录微信文章，Camoufox 自动绕过反爬，图片本地化 |
-| **personal-knowledge-mcp** | 多维表格 CRUD、知识空间遍历、本地搜索、单文件增量索引 | 收集箱管理、wiki 检索、飞书结构浏览、`index_file` 增量索引 |
+| **personal-knowledge-mcp** | 多维表格 CRUD、知识空间发现与递归遍历、本地搜索、单文件增量索引 | 收集箱管理、wiki 检索、飞书结构浏览、`list_wiki_spaces` 发现空间、`get_wiki_nodes` 递归遍历、`index_file` 增量索引；注意当前飞书内容不是自动统一入本地搜索，只有落地到 `raw/` / `wiki/` 后才会进入本地索引 |
 | **content-extract skill** | 外部网页内容抓取 | 收录非微信的外部网页文章 |
 | **agent-browser** | 浏览器自动化 | 反爬兜底方案，遇到验证码时 `--headed` 模式手动过验证 |
 | **Droid + AGENTS.md** | 知识编译引擎 | 摘要生成、概念提取、交叉链接、wiki 维护 |
@@ -182,7 +187,9 @@ Droid 执行:
 - 多维表格与 raw/ 目录一致性
 ```
 
-## 当前知识库状态
+## 2026-04-08 知识库快照
+
+以下内容是 2026-04-08 搭建 Work Wiki 当天的快照，用于说明当时的验证结果，不代表今天的实时状态。
 
 ### 已收录文档（5 篇）
 
@@ -237,11 +244,14 @@ feishu-docx export "https://xxx.feishu.cn/wiki/xxx" -o /tmp/test/
 
 配置文件保存在 `~/.feishu-docx/config.json`，使用 tenant_access_token 认证模式。
 
-### MCP 新增能力
+### 与 Work Wiki 相关的 MCP 能力
 
 | 工具 | 功能 |
 |------|------|
-| `index_file` | 单文件增量索引（解析→分 chunk→FTS5→可选 embedding），写入文件后立即调用确保可搜索 |
+| `list_wiki_spaces` | 列出当前应用可访问的所有知识空间（发现 space_id） |
+| `get_wiki_nodes` | 获取节点列表，支持 `recursive` 递归展开完整文档树 |
+| `get_wiki_node_content` | 只需 `node_token` 即可获取文档内容（无需 space_id，使用 get_node API） |
+| `index_file` | 单文件增量索引（解析→分 chunk→FTS5→自动 embedding），写入文件后立即调用确保可搜索 |
 | `list_bitable_fields` | 列出多维表格所有字段 |
 | `create_bitable_field` | 创建新字段 |
 | `update_bitable_field` | 更新字段属性 |

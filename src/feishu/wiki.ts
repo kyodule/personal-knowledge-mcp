@@ -5,6 +5,16 @@ import { getSpreadsheetContent } from './sheets.js';
 import { listBitableTables, getBitableRecords } from './bitable.js';
 
 /**
+ * 知识空间信息
+ */
+export interface WikiSpace {
+  space_id: string;
+  name: string;
+  description: string;
+  space_type: string;
+}
+
+/**
  * 知识空间节点信息
  */
 export interface WikiNode {
@@ -14,6 +24,7 @@ export interface WikiNode {
   title: string;
   has_child: boolean;
   parent_node_token?: string;
+  children?: WikiNode[];
 }
 
 /**
@@ -135,25 +146,66 @@ function formatCellValue(value: unknown): string {
 }
 
 /**
- * 获取知识空间节点列表（支持分页）
+ * 获取知识空间列表
  */
-export async function getWikiNodes(
-  client: lark.Client,
-  input: GetWikiNodesInput
-): Promise<{ nodes: WikiNode[] }> {
-  const { space_id, parent_node_token } = input;
-  const allNodes: WikiNode[] = [];
+export async function listWikiSpaces(
+  client: lark.Client
+): Promise<{ spaces: WikiSpace[]; hint?: string }> {
+  const allSpaces: WikiSpace[] = [];
   let pageToken: string | undefined;
 
   do {
-    const params: Record<string, unknown> = {
-      page_size: 50,
-    };
+    const params: Record<string, unknown> = { page_size: 50 };
+    if (pageToken) {
+      params.page_token = pageToken;
+    }
 
+    const response = await client.wiki.space.list({
+      params: params as any,
+    });
+
+    if (!response.data) {
+      throw new Error(`获取知识空间列表失败: ${response.msg}`);
+    }
+
+    const spaces = (response.data.items || []).map((item) => ({
+      space_id: item.space_id || '',
+      name: item.name || '',
+      description: item.description || '',
+      space_type: item.space_type || '',
+    }));
+
+    allSpaces.push(...spaces);
+    pageToken = response.data.page_token || undefined;
+  } while (pageToken);
+
+  if (allSpaces.length === 0) {
+    return {
+      spaces: [],
+      hint: '未找到任何知识空间。请确认：1) 应用已被添加为知识空间成员或管理员；2) 已开启 wiki:wiki 或 wiki:wiki.readonly 权限。参考：https://open.feishu.cn/document/server-docs/docs/wiki-v2/wiki-qa#b5da330b',
+    };
+  }
+
+  return { spaces: allSpaces };
+}
+
+/**
+ * 获取单层子节点列表（内部分页）
+ */
+async function listChildNodes(
+  client: lark.Client,
+  space_id: string,
+  parent_node_token?: string
+): Promise<WikiNode[]> {
+  const allNodes: WikiNode[] = [];
+  let pageToken: string | undefined;
+  let emptyPages = 0;
+
+  do {
+    const params: Record<string, unknown> = { page_size: 50 };
     if (parent_node_token) {
       params.parent_node_token = parent_node_token;
     }
-
     if (pageToken) {
       params.page_token = pageToken;
     }
@@ -167,7 +219,8 @@ export async function getWikiNodes(
       throw new Error(`获取知识空间节点失败: ${response.msg}`);
     }
 
-    const nodes = (response.data.items || []).map((item) => ({
+    const items = response.data.items || [];
+    const nodes = items.map((item) => ({
       node_token: item.node_token || '',
       obj_token: item.obj_token || '',
       obj_type: item.obj_type || '',
@@ -177,100 +230,119 @@ export async function getWikiNodes(
     }));
 
     allNodes.push(...nodes);
+
+    // 官方文档：由于权限过滤，可能返回空列表但 has_more=true，需继续分页
+    if (items.length === 0) {
+      emptyPages++;
+      // 连续 3 页空结果则停止，避免无限循环
+      if (emptyPages >= 3) break;
+    } else {
+      emptyPages = 0;
+    }
+
     pageToken = response.data.page_token || undefined;
   } while (pageToken);
 
-  return { nodes: allNodes };
+  return allNodes;
+}
+
+/**
+ * 获取知识空间节点列表（支持分页和递归）
+ */
+export async function getWikiNodes(
+  client: lark.Client,
+  input: GetWikiNodesInput
+): Promise<{ nodes: WikiNode[]; hint?: string }> {
+  const { space_id, parent_node_token, recursive } = input;
+
+  const nodes = await listChildNodes(client, space_id, parent_node_token);
+
+  if (recursive) {
+    for (const node of nodes) {
+      if (node.has_child) {
+        const childNodes = await getWikiNodesRecursive(client, space_id, node.node_token);
+        node.children = childNodes;
+      }
+    }
+  }
+
+  const result: { nodes: WikiNode[]; hint?: string } = { nodes };
+
+  if (nodes.length === 0) {
+    result.hint = '未找到任何节点。可能原因：1) 权限过滤导致不可见（应用需被添加为知识空间成员）；2) 该节点下确实没有子文档；3) space_id 不正确。参考：https://open.feishu.cn/document/server-docs/docs/wiki-v2/wiki-qa#b5da330b';
+  }
+
+  return result;
+}
+
+/**
+ * 递归获取子节点（深度优先）
+ */
+async function getWikiNodesRecursive(
+  client: lark.Client,
+  space_id: string,
+  parent_node_token: string
+): Promise<WikiNode[]> {
+  const nodes = await listChildNodes(client, space_id, parent_node_token);
+
+  for (const node of nodes) {
+    if (node.has_child) {
+      node.children = await getWikiNodesRecursive(client, space_id, node.node_token);
+    }
+  }
+
+  return nodes;
 }
 
 /**
  * 获取知识库节点的文档内容
- * 支持只传 node_token（会自动获取节点信息）
+ * 始终使用 get_node 接口直接获取节点信息（无需 space_id，无需遍历）
  */
 export async function getWikiNodeContent(
   client: lark.Client,
   input: GetWikiNodeContentInput
-): Promise<{ title: string; content: string; obj_type: string }> {
-  const { space_id, node_token } = input;
+): Promise<{ title: string; content: string; obj_type: string; space_id: string; has_child: boolean }> {
+  const { node_token } = input;
 
-  let objToken = '';
-  let objType = '';
-  let title = '';
+  // 始终使用 get_node 接口，只需 token 即可，不需要 space_id
+  const nodeResponse = await client.wiki.space.getNode({
+    params: { token: node_token } as any,
+  });
 
-  if (space_id) {
-    // 如果提供了 space_id，通过分页 list 接口查找节点
-    let found = false;
-    let pageToken: string | undefined;
-
-    do {
-      const params: Record<string, unknown> = { page_size: 50 };
-      if (pageToken) {
-        params.page_token = pageToken;
-      }
-
-      const listResponse = await client.wiki.spaceNode.list({
-        path: { space_id },
-        params: params as any,
-      });
-
-      if (!listResponse.data?.items) {
-        throw new Error(`获取知识库节点列表失败: ${listResponse.msg}`);
-      }
-
-      const node = listResponse.data.items.find((item) => item.node_token === node_token);
-
-      if (node) {
-        objToken = node.obj_token || '';
-        objType = node.obj_type || '';
-        title = node.title || '';
-        found = true;
-        break;
-      }
-
-      pageToken = listResponse.data.page_token || undefined;
-    } while (pageToken);
-
-    if (!found) {
-      throw new Error(`未找到节点: ${node_token}`);
-    }
-  } else {
-    // 如果没有 space_id，使用 getNode 接口直接获取节点信息
-    const nodeResponse = await client.wiki.space.getNode({
-      params: { token: node_token } as any,
-    });
-
-    if (!nodeResponse.data?.node) {
-      throw new Error(`获取节点信息失败: ${nodeResponse.msg}`);
-    }
-
-    const node = nodeResponse.data.node;
-    objToken = node.obj_token || '';
-    objType = node.obj_type || '';
-    title = node.title || '';
+  if (!nodeResponse.data?.node) {
+    const errMsg = nodeResponse.msg || '未知错误';
+    throw new Error(
+      `获取节点信息失败: ${errMsg}。请确认：1) node_token 正确（从 wiki URL 中 /wiki/ 后的部分）；2) 应用有该节点的阅读权限。`
+    );
   }
+
+  const node = nodeResponse.data.node;
+  const objToken = node.obj_token || '';
+  const objType = node.obj_type || '';
+  const title = node.title || '';
+  const spaceId = (node as any).space_id || '';
+  const hasChild = (node as any).has_child || false;
+
+  const base = { title, obj_type: objType, space_id: spaceId, has_child: hasChild };
 
   // 根据文档类型获取内容
   if (objType === 'docx' || objType === 'doc') {
     const content = await extractDocxContent(client, objToken);
-    return { title, content, obj_type: objType };
+    return { ...base, content };
   }
 
-  // 电子表格类型
   if (objType === 'sheet') {
     const content = await getSpreadsheetContent(client, objToken);
-    return { title, content, obj_type: objType };
+    return { ...base, content };
   }
 
-  // 多维表格类型
   if (objType === 'bitable') {
     const content = await getBitableContent(client, objToken);
-    return { title, content, obj_type: objType };
+    return { ...base, content };
   }
 
-  // 其他类型暂不支持，返回基本信息
   return {
-    title,
+    ...base,
     content: `[${objType} 类型文档，暂不支持内容提取。支持的类型: docx, doc, sheet, bitable]`,
-    obj_type: objType,
   };
 }

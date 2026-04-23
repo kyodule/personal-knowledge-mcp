@@ -4,6 +4,10 @@
 **状态**: Implemented (v1)
 **灵感来源**: Karpathy LLM Wiki (gist, 2026-04-04)
 
+> 这是 Work Wiki 的设计/实施文档。
+>
+> 如果你想了解仓库当前运行状态、工具边界和哪些能力已经真正落地，请优先看 [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md)。
+
 ## 1. 背景与目标
 
 ### 问题

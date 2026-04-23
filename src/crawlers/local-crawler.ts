@@ -105,6 +105,27 @@ export class LocalCrawler {
     if (documents.length > 0) {
       this.log(`正在保存 ${documents.length} 个新/变更文档到数据库...`);
       this.database.batchUpsert(documents);
+
+      // 为新增/变更的 chunks 自动生成 embedding
+      try {
+        const { embedBatch } = await import('../utils/embedder.js');
+        const BATCH_SIZE = 100;
+        let totalEmbedded = 0;
+        while (true) {
+          const chunks = this.database.getChunksWithoutEmbedding(BATCH_SIZE);
+          if (chunks.length === 0) break;
+          const texts = chunks.map(c => c.content);
+          const embeddings = await embedBatch(texts);
+          const items = chunks.map((chunk, i) => ({ chunkId: chunk.id, embedding: embeddings[i] }));
+          this.database.batchInsertEmbeddings(items);
+          totalEmbedded += chunks.length;
+        }
+        if (totalEmbedded > 0) {
+          this.log(`自动生成 ${totalEmbedded} 个 chunks 的 embedding`);
+        }
+      } catch (e) {
+        this.log(`embedding 生成失败（不影响 BM25 搜索）: ${e}`);
+      }
     }
 
     if (skippedCount > 0) {

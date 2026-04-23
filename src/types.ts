@@ -144,13 +144,14 @@ export interface GetBitableRecordsInput {
 export interface GetWikiNodesInput {
   space_id: string;
   parent_node_token?: string;
+  recursive?: boolean;
 }
 
 /**
  * 知识库节点内容获取参数
  */
 export interface GetWikiNodeContentInput {
-  space_id: string;
+  space_id?: string;
   node_token: string;
 }
 

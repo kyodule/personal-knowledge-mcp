@@ -24,7 +24,9 @@ import {
   deleteBitableField,
   getWikiNodes,
   getWikiNodeContent,
+  listWikiSpaces,
   extractDocxContent,
+  writeDocxContent,
   listDriveFiles,
   getDriveFileContent,
   listSheets,
@@ -238,8 +240,16 @@ export class KnowledgeMCPServer {
             },
           },
           {
+            name: 'list_wiki_spaces',
+            description: '列出当前应用可访问的所有飞书知识空间。用于发现可用的知识空间及其 space_id',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+            },
+          },
+          {
             name: 'get_wiki_nodes',
-            description: '获取飞书知识空间的节点列表（文档目录）。注意：需要 space_id（数字格式，如 7561364012530434051），不是 node_token',
+            description: '获取飞书知识空间的节点列表（文档目录）。支持 recursive 参数递归获取所有子节点。注意：需要 space_id（数字格式，如 7561364012530434051），不是 node_token',
             inputSchema: {
               type: 'object',
               properties: {
@@ -249,7 +259,11 @@ export class KnowledgeMCPServer {
                 },
                 parent_node_token: {
                   type: 'string',
-                  description: '父节点 token（可选，不传则返回根节点）',
+                  description: '父节点 token（可选，不传则返回根节点的直接子节点）',
+                },
+                recursive: {
+                  type: 'boolean',
+                  description: '是否递归获取所有子节点（默认 false，只返回一层）',
                 },
               },
               required: ['space_id'],
@@ -257,17 +271,13 @@ export class KnowledgeMCPServer {
           },
           {
             name: 'get_wiki_node_content',
-            description: '获取飞书知识库中指定文档的内容。使用 node_token（从 wiki URL 中获取，如 CwrFwxs7jigxPYkVHWHc1wb6nPh）',
+            description: '获取飞书知识库中指定文档的内容。只需 node_token（从 wiki URL 中 /wiki/ 后的部分），无需 space_id。返回值包含 space_id 和 has_child，可直接用于后续调用 get_wiki_nodes 展开目录树',
             inputSchema: {
               type: 'object',
               properties: {
                 node_token: {
                   type: 'string',
                   description: '节点 token（从 wiki URL 获取，如 https://xxx.feishu.cn/wiki/CwrFwxs7jigxPYkVHWHc1wb6nPh 中的 CwrFwxs7jigxPYkVHWHc1wb6nPh）',
-                },
-                space_id: {
-                  type: 'string',
-                  description: '知识空间 ID（可选，不提供时会自动获取）',
                 },
               },
               required: ['node_token'],
@@ -288,14 +298,32 @@ export class KnowledgeMCPServer {
             },
           },
           {
+            name: 'write_docx_content',
+            description: '向飞书云文档写入 Markdown 内容。将 Markdown 解析为飞书文档块（标题、列表、代码块、引用等），追加到文档末尾。适用于向已有文档批量写入结构化内容',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                document_id: {
+                  type: 'string',
+                  description: '云文档 ID（从 URL 获取，如 https://xxx.feishu.cn/docx/OdETduLUeofcxVxjOIxc52T7nLc 中的 OdETduLUeofcxVxjOIxc52T7nLc）',
+                },
+                content: {
+                  type: 'string',
+                  description: '要写入的 Markdown 内容，支持标题(#)、列表(-)、代码块(```)、引用(>)、加粗(**)等格式',
+                },
+              },
+              required: ['document_id', 'content'],
+            },
+          },
+          {
             name: 'list_drive_files',
-            description: '列出飞书云盘文件夹中的文件',
+            description: '列出飞书云盘文件夹中的文件。需要先将文件夹共享给应用，然后传入该文件夹的 token',
             inputSchema: {
               type: 'object',
               properties: {
                 folder_token: {
                   type: 'string',
-                  description: '文件夹 token（根目录用 "root"）',
+                  description: '文件夹 token（需要先在飞书中将文件夹共享给应用）',
                 },
                 file_type: {
                   type: 'string',
@@ -696,8 +724,14 @@ export class KnowledgeMCPServer {
           case 'get_wiki_node_content':
             return await this.withFeishuRetry(() => this.handleGetWikiNodeContent(args));
 
+          case 'list_wiki_spaces':
+            return await this.withFeishuRetry(() => this.handleListWikiSpaces());
+
           case 'get_docx_content':
             return await this.withFeishuRetry(() => this.handleGetDocxContent(args));
+
+          case 'write_docx_content':
+            return await this.withFeishuRetry(() => this.handleWriteDocxContent(args));
 
           case 'list_drive_files':
             return await this.withFeishuRetry(() => this.handleListDriveFiles(args));
@@ -1027,13 +1061,13 @@ export class KnowledgeMCPServer {
    */
   private async handleGetWikiNodes(args: any) {
     const client = this.ensureFeishuClient();
-    const { space_id, parent_node_token } = args;
+    const { space_id, parent_node_token, recursive } = args;
 
     if (!space_id) {
       throw new Error('space_id 参数必须提供');
     }
 
-    const result = await getWikiNodes(client, { space_id, parent_node_token });
+    const result = await getWikiNodes(client, { space_id, parent_node_token, recursive });
 
     return {
       content: [
@@ -1050,13 +1084,30 @@ export class KnowledgeMCPServer {
    */
   private async handleGetWikiNodeContent(args: any) {
     const client = this.ensureFeishuClient();
-    const { space_id, node_token } = args;
+    const { node_token } = args;
 
     if (!node_token) {
       throw new Error('node_token 参数必须提供');
     }
 
-    const result = await getWikiNodeContent(client, { space_id, node_token });
+    const result = await getWikiNodeContent(client, { node_token });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理列出知识空间
+   */
+  private async handleListWikiSpaces() {
+    const client = this.ensureFeishuClient();
+    const result = await listWikiSpaces(client);
 
     return {
       content: [
@@ -1086,6 +1137,32 @@ export class KnowledgeMCPServer {
         {
           type: 'text',
           text: content,
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理写入云文档内容
+   */
+  private async handleWriteDocxContent(args: any) {
+    const client = this.ensureFeishuClient();
+    const { document_id, content } = args;
+
+    if (!document_id) {
+      throw new Error('document_id 参数必须提供');
+    }
+    if (!content) {
+      throw new Error('content 参数必须提供');
+    }
+
+    const result = await writeDocxContent(client, document_id, content);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `写入成功，共创建 ${result.blocksCreated} 个文档块`,
         },
       ],
     };
