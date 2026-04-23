@@ -207,33 +207,55 @@ export class KnowledgeDatabase {
   /**
    * BM25 关键词搜索（FTS5）
    */
-  private searchBM25(tokenizedQuery: string, source?: string, limit: number = 40): Array<{ chunkId: number; docId: string; rank: number }> {
-    let sql = `
+  private searchBM25(tokenizedQuery: string, source?: string, limit: number = 40, pathLike?: string): Array<{ chunkId: number; docId: string; rank: number }> {
+    const conds: string[] = ['chunks_fts MATCH ?'];
+    const params: any[] = [tokenizedQuery];
+    let join = '';
+    if (source || pathLike) {
+      join = ' JOIN documents d ON d.id = fts.doc_id';
+      if (source) { conds.push('d.source = ?'); params.push(source); }
+      if (pathLike) { conds.push('d.source_id LIKE ?'); params.push(pathLike); }
+    }
+    const sql = `
       SELECT c.id as chunkId, fts.doc_id as docId,
         bm25(chunks_fts, 0, 0, 10.0, 1.0) as rank
       FROM chunks_fts fts
       JOIN chunks c ON c.doc_id = fts.doc_id AND c.chunk_index = fts.chunk_index
+      ${join}
+      WHERE ${conds.join(' AND ')}
+      ORDER BY rank LIMIT ?
     `;
-    const params: any[] = [];
-    if (source) {
-      sql += ' JOIN documents d ON d.id = fts.doc_id WHERE chunks_fts MATCH ? AND d.source = ?';
-      params.push(tokenizedQuery, source);
-    } else {
-      sql += ' WHERE chunks_fts MATCH ?';
-      params.push(tokenizedQuery);
-    }
-    sql += ' ORDER BY rank LIMIT ?';
     params.push(limit);
     return this.db.prepare(sql).all(...params) as any[];
   }
 
   /**
-   * 向量 KNN 搜索（sqlite-vec）
+   * 向量 KNN 搜索（sqlite-vec）。可选 pathLike 通过 JOIN documents 过滤。
    */
-  private searchVector(queryEmbedding: Buffer, limit: number = 40): Array<{ chunkId: number; distance: number }> {
-    return this.db.prepare(
+  private searchVector(queryEmbedding: Buffer, limit: number = 40, source?: string, pathLike?: string): Array<{ chunkId: number; distance: number }> {
+    if (!source && !pathLike) {
+      return this.db.prepare(
+        'SELECT chunk_id as chunkId, distance FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
+      ).all(queryEmbedding, limit) as any[];
+    }
+    // 带过滤时多召回再过滤（vec0 不支持任意 WHERE）
+    const overFetch = limit * 5;
+    const candidates = this.db.prepare(
       'SELECT chunk_id as chunkId, distance FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
-    ).all(queryEmbedding, limit) as any[];
+    ).all(queryEmbedding, overFetch) as any[];
+    if (candidates.length === 0) return [];
+    const ids = candidates.map((c) => c.chunkId);
+    const placeholders = ids.map(() => '?').join(',');
+    const conds: string[] = [`c.id IN (${placeholders})`];
+    const params: any[] = [...ids];
+    if (source) { conds.push('d.source = ?'); params.push(source); }
+    if (pathLike) { conds.push('d.source_id LIKE ?'); params.push(pathLike); }
+    const allowed = new Set(
+      (this.db.prepare(
+        `SELECT c.id as id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${conds.join(' AND ')}`
+      ).all(...params) as any[]).map((r) => r.id)
+    );
+    return candidates.filter((c) => allowed.has(c.chunkId)).slice(0, limit);
   }
 
   /**
@@ -245,7 +267,7 @@ export class KnowledgeDatabase {
     // BM25 search
     let bm25Results: Array<{ chunkId: number; docId: string; rank: number }> = [];
     try {
-      bm25Results = this.searchBM25(tokenizedQuery, filters?.source, limit * 3);
+      bm25Results = this.searchBM25(tokenizedQuery, filters?.source, limit * 3, filters?.path_like);
     } catch { /* FTS match can fail on some queries */ }
 
     // Vector search (if embedding provided)
@@ -253,7 +275,7 @@ export class KnowledgeDatabase {
     if (queryEmbedding) {
       const embStats = this.getEmbeddingStats();
       if (embStats.withEmbedding > 0) {
-        try { vecResults = this.searchVector(queryEmbedding, limit * 3); } catch { /* ok */ }
+        try { vecResults = this.searchVector(queryEmbedding, limit * 3, filters?.source, filters?.path_like); } catch { /* ok */ }
       }
     }
 

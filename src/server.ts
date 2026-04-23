@@ -9,6 +9,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { KnowledgeDatabase } from './storage/database.js';
 import { LocalCrawler } from './crawlers/local-crawler.js';
 import { lintDuplicates } from './retrieval/lint.js';
+import { findSimilarPages } from './retrieval/similar.js';
 import { Config, SearchFilters, SearchResult } from './types.js';
 import {
   getFeishuClient,
@@ -217,6 +218,43 @@ export class KnowledgeMCPServer {
               },
             },
             required: ['path_like'],
+          },
+        },
+        {
+          name: 'find_similar_pages',
+          description: '查找已有 concept/entity 页面的近似匹配，用于 Ingest 去重决策。返回 merge/review/distinct 建议。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: {
+                type: 'string',
+                description: '候选名称 + 可选简短描述，作为检索 query',
+              },
+              kind: {
+                type: 'string',
+                enum: ['concept', 'entity'],
+                description: '页面类型，决定默认 path_like',
+              },
+              path_like: {
+                type: 'string',
+                description: '自定义 source_id LIKE 模式，覆盖 kind 的默认值（可选）',
+              },
+              top_k: {
+                type: 'number',
+                description: '返回匹配项数量，默认 5',
+                default: 5,
+              },
+              rerank: {
+                type: 'boolean',
+                description: '是否启用 cross-encoder rerank（首次会下载模型）。默认 false',
+                default: false,
+              },
+              candidate_title: {
+                type: 'string',
+                description: '候选页面标题，用于 bigram Jaccard 比较（可选，默认取 text）',
+              },
+            },
+            required: ['text', 'kind'],
           },
         },
       ];
@@ -753,6 +791,9 @@ export class KnowledgeMCPServer {
           case 'lint_duplicates':
             return await this.handleLintDuplicates(args);
 
+          case 'find_similar_pages':
+            return await this.handleFindSimilarPages(args);
+
           // 飞书相关工具（统一 retry 包装）
           case 'get_bitable_records':
             return await this.withFeishuRetry(() => this.handleGetBitableRecords(args));
@@ -1042,6 +1083,55 @@ export class KnowledgeMCPServer {
       limit,
       maxChars: max_chars,
     });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理 find_similar_pages 请求 (P0-2)
+   * 注入 db.searchDocuments / embedQuery / reranker 三个依赖给 similar 模块
+   */
+  private async handleFindSimilarPages(args: any) {
+    const { text, kind, path_like, top_k, rerank, candidate_title } = args || {};
+    if (!text || typeof text !== 'string') {
+      throw new Error('text 参数必须是非空字符串');
+    }
+    if (kind !== 'concept' && kind !== 'entity') {
+      throw new Error('kind 必须是 "concept" 或 "entity"');
+    }
+
+    const searchFn = (query: string, filters: any, limit: number, queryEmbedding?: Buffer) =>
+      this.database.searchDocuments(query, filters, limit, queryEmbedding);
+
+    const embedQuery = async (q: string): Promise<Buffer | undefined> => {
+      try {
+        const { embed, vecToBuffer } = await import('./utils/embedder.js');
+        return vecToBuffer(await embed(q));
+      } catch {
+        return undefined;
+      }
+    };
+
+    const rerankFn = rerank
+      ? async (q: string, candidates: Array<{ payload: SearchResult; text: string }>) => {
+          const { rerank: doRerank } = await import('./retrieval/reranker.js');
+          return doRerank(q, candidates);
+        }
+      : undefined;
+
+    const result = await findSimilarPages(
+      this.database,
+      { text, kind, path_like, top_k, rerank, candidate_title },
+      searchFn,
+      embedQuery,
+      rerankFn
+    );
     return {
       content: [
         {
