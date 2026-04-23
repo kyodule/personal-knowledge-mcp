@@ -91,7 +91,7 @@ export class KnowledgeMCPServer {
       const tools: Tool[] = [
         {
           name: 'search_documents',
-          description: '搜索知识库中的文档。支持全文搜索，可按来源筛选。',
+          description: '搜索知识库中的文档。支持 BM25 + 向量混合召回；可选 cross-encoder rerank 提升精度。',
           inputSchema: {
             type: 'object',
             properties: {
@@ -108,6 +108,15 @@ export class KnowledgeMCPServer {
                 type: 'number',
                 description: '返回结果数量，默认 20',
                 default: 20,
+              },
+              rerank: {
+                type: 'boolean',
+                description: '是否启用 cross-encoder 重排（首次调用会下载约 200MB 模型）。默认 false，对长尾/语义查询建议开。',
+                default: false,
+              },
+              rerank_pool: {
+                type: 'number',
+                description: 'rerank 候选池大小（仅 rerank=true 时生效），默认 max(limit*3, 30)',
               },
             },
             required: ['query'],
@@ -830,7 +839,7 @@ export class KnowledgeMCPServer {
    * 处理搜索请求
    */
   private async handleSearch(args: any) {
-    const { query, source, limit = 20 } = args;
+    const { query, source, limit = 20, rerank = false, rerank_pool } = args;
 
     if (!query || typeof query !== 'string') {
       throw new Error('query 参数必须是非空字符串');
@@ -846,7 +855,31 @@ export class KnowledgeMCPServer {
       queryEmbedding = vecToBuffer(vec);
     } catch { /* fallback to BM25 only */ }
 
-    const results: SearchResult[] = this.database.searchDocuments(query, filters, limit, queryEmbedding);
+    // 当 rerank 开启时多召回，避免被 db 层 limit 提前砍掉好结果
+    const poolSize = rerank ? (rerank_pool ?? Math.max(limit * 3, 30)) : limit;
+    let results: SearchResult[] = this.database.searchDocuments(query, filters, poolSize, queryEmbedding);
+
+    let rerankApplied = false;
+    if (rerank && results.length > 1) {
+      try {
+        const { rerank: doRerank } = await import('./retrieval/reranker.js');
+        const reranked = await doRerank(
+          query,
+          results.map((r) => ({
+            payload: r,
+            // 用 title + snippet 作为重排输入；snippet 已是 query-aware 截取
+            text: `${r.title}\n${r.snippet}`,
+          }))
+        );
+        results = reranked.slice(0, limit).map((x) => x.payload);
+        rerankApplied = true;
+      } catch (e: any) {
+        // rerank 失败不影响主流程，回退到融合分数顺序
+        results = results.slice(0, limit);
+      }
+    } else if (rerank) {
+      results = results.slice(0, limit);
+    }
 
     return {
       content: [
@@ -855,6 +888,7 @@ export class KnowledgeMCPServer {
           text: JSON.stringify(
             {
               total: results.length,
+              rerank_applied: rerankApplied,
               documents: results.map((r) => ({
                 id: r.id,
                 title: r.title,
