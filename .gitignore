@@ -42,3 +42,7 @@ plan.md
 test-feishu.ts
 test-wiki-sheet.mjs
 test-sheet.ts
+
+# 内部 / 敏感资料（不入仓）
+AI产研团队培训文档.md
+.factory/
