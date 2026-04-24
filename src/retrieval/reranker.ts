@@ -12,11 +12,16 @@ let pipelinePromise: Promise<any> | null = null;
 
 async function getReranker(): Promise<any> {
   if (!pipelinePromise) {
-    pipelinePromise = (async () => {
+    const p = (async () => {
       const { pipeline } = await import('@huggingface/transformers');
       // text-classification pipeline 跑 cross-encoder，input 是 [{text, text_pair}]
       return pipeline('text-classification', MODEL_NAME, { dtype: 'fp32', device: 'cpu' });
     })();
+    pipelinePromise = p;
+    // 失败时清空缓存，允许下次重试（否则 rejected promise 会让整个进程卡死）
+    p.catch(() => {
+      if (pipelinePromise === p) pipelinePromise = null;
+    });
   }
   return pipelinePromise;
 }
@@ -29,13 +34,21 @@ export interface RerankCandidate<T = any> {
 /**
  * 对候选列表按 (query, candidate.text) 相关性重排。
  * 返回与输入等长、按 score 降序排列的新数组（包含 score）。
+ * 抛出时调用方应 fallback 到原始候选顺序。
  */
 export async function rerank<T>(
   query: string,
   candidates: RerankCandidate<T>[]
 ): Promise<Array<{ payload: T; score: number }>> {
   if (candidates.length === 0) return [];
-  const model = await getReranker();
+  let model: any;
+  try {
+    model = await getReranker();
+  } catch (err: any) {
+    // 抛出带明确来源的错误，便于上层区分"reranker 不可用"vs"其他错误"
+    const msg = err?.message || String(err);
+    throw new Error(`reranker_unavailable: ${msg}`);
+  }
 
   // bge-reranker 期望成对输入，transformers.js 接受 {text, text_pair} 数组
   const inputs = candidates.map((c) => ({

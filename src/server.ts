@@ -901,6 +901,7 @@ export class KnowledgeMCPServer {
     let results: SearchResult[] = this.database.searchDocuments(query, filters, poolSize, queryEmbedding);
 
     let rerankApplied = false;
+    let rerankError: string | undefined;
     if (rerank && results.length > 1) {
       try {
         const { rerank: doRerank } = await import('./retrieval/reranker.js');
@@ -915,7 +916,8 @@ export class KnowledgeMCPServer {
         results = reranked.slice(0, limit).map((x) => x.payload);
         rerankApplied = true;
       } catch (e: any) {
-        // rerank 失败不影响主流程，回退到融合分数顺序
+        // rerank 失败不影响主流程，回退到融合分数顺序；但把原因透传给客户端
+        rerankError = e?.message || String(e);
         results = results.slice(0, limit);
       }
     } else if (rerank) {
@@ -929,7 +931,9 @@ export class KnowledgeMCPServer {
           text: JSON.stringify(
             {
               total: results.length,
+              rerank_requested: rerank,
               rerank_applied: rerankApplied,
+              ...(rerankError ? { rerank_error: rerankError } : {}),
               documents: results.map((r) => ({
                 id: r.id,
                 title: r.title,
