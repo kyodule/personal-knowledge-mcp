@@ -231,6 +231,9 @@ export class KnowledgeDatabase {
 
   /**
    * 向量 KNN 搜索（sqlite-vec）。可选 pathLike 通过 JOIN documents 过滤。
+   * 因为 vec0 不支持任意 WHERE，带过滤时用迭代 over-fetch：
+   * 初始取 limit*5，过滤后不够则翻倍重试，上限 limit*50。
+   * 这样能显著降低"相关 chunk 不在全局 top 池里就被漏召回"的风险。
    */
   private searchVector(queryEmbedding: Buffer, limit: number = 40, source?: string, pathLike?: string): Array<{ chunkId: number; distance: number }> {
     if (!source && !pathLike) {
@@ -238,24 +241,32 @@ export class KnowledgeDatabase {
         'SELECT chunk_id as chunkId, distance FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
       ).all(queryEmbedding, limit) as any[];
     }
-    // 带过滤时多召回再过滤（vec0 不支持任意 WHERE）
-    const overFetch = limit * 5;
-    const candidates = this.db.prepare(
-      'SELECT chunk_id as chunkId, distance FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
-    ).all(queryEmbedding, overFetch) as any[];
-    if (candidates.length === 0) return [];
-    const ids = candidates.map((c) => c.chunkId);
-    const placeholders = ids.map(() => '?').join(',');
-    const conds: string[] = [`c.id IN (${placeholders})`];
-    const params: any[] = [...ids];
-    if (source) { conds.push('d.source = ?'); params.push(source); }
-    if (pathLike) { conds.push('d.source_id LIKE ?'); params.push(pathLike); }
-    const allowed = new Set(
-      (this.db.prepare(
-        `SELECT c.id as id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${conds.join(' AND ')}`
-      ).all(...params) as any[]).map((r) => r.id)
-    );
-    return candidates.filter((c) => allowed.has(c.chunkId)).slice(0, limit);
+    const maxOverFetch = limit * 50;
+    let fetchSize = Math.min(limit * 5, maxOverFetch);
+    let lastFiltered: Array<{ chunkId: number; distance: number }> = [];
+    while (true) {
+      const candidates = this.db.prepare(
+        'SELECT chunk_id as chunkId, distance FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
+      ).all(queryEmbedding, fetchSize) as any[];
+      if (candidates.length === 0) return [];
+      const ids = candidates.map((c) => c.chunkId);
+      const placeholders = ids.map(() => '?').join(',');
+      const conds: string[] = [`c.id IN (${placeholders})`];
+      const params: any[] = [...ids];
+      if (source) { conds.push('d.source = ?'); params.push(source); }
+      if (pathLike) { conds.push('d.source_id LIKE ?'); params.push(pathLike); }
+      const allowed = new Set(
+        (this.db.prepare(
+          `SELECT c.id as id FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE ${conds.join(' AND ')}`
+        ).all(...params) as any[]).map((r) => r.id)
+      );
+      lastFiltered = candidates.filter((c) => allowed.has(c.chunkId));
+      // 命中数足够 / 已无更多候选 / 已达上限 → 收手
+      if (lastFiltered.length >= limit || candidates.length < fetchSize || fetchSize >= maxOverFetch) {
+        return lastFiltered.slice(0, limit);
+      }
+      fetchSize = Math.min(fetchSize * 2, maxOverFetch);
+    }
   }
 
   /**
