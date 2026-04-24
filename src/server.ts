@@ -8,6 +8,8 @@ import {
 import * as lark from '@larksuiteoapi/node-sdk';
 import { KnowledgeDatabase } from './storage/database.js';
 import { LocalCrawler } from './crawlers/local-crawler.js';
+import { lintDuplicates } from './retrieval/lint.js';
+import { findSimilarPages } from './retrieval/similar.js';
 import { Config, SearchFilters, SearchResult } from './types.js';
 import {
   getFeishuClient,
@@ -90,7 +92,7 @@ export class KnowledgeMCPServer {
       const tools: Tool[] = [
         {
           name: 'search_documents',
-          description: '搜索知识库中的文档。支持全文搜索，可按来源筛选。',
+          description: '搜索知识库中的文档。支持 BM25 + 向量混合召回；可选 cross-encoder rerank 提升精度。',
           inputSchema: {
             type: 'object',
             properties: {
@@ -107,6 +109,15 @@ export class KnowledgeMCPServer {
                 type: 'number',
                 description: '返回结果数量，默认 20',
                 default: 20,
+              },
+              rerank: {
+                type: 'boolean',
+                description: '是否启用 cross-encoder 重排（首次调用会下载约 200MB 模型）。默认 false，对长尾/语义查询建议开。',
+                default: false,
+              },
+              rerank_pool: {
+                type: 'number',
+                description: 'rerank 候选池大小（仅 rerank=true 时生效），默认 max(limit*3, 30)',
               },
             },
             required: ['query'],
@@ -178,6 +189,72 @@ export class KnowledgeMCPServer {
               },
             },
             required: ['file_path'],
+          },
+        },
+        {
+          name: 'lint_duplicates',
+          description: '检测知识库中近似重复的文档（基于文档级 embedding 余弦相似度 + 标题 bigram Jaccard）。用于 wiki concepts/entities 去重。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path_like: {
+                type: 'string',
+                description: 'source_id 的 LIKE 模式，如 "%/wiki/concepts/%" 或 "%/wiki/entities/%"',
+              },
+              threshold: {
+                type: 'number',
+                description: '语义相似度阈值（0-1），默认 0.85',
+                default: 0.85,
+              },
+              limit: {
+                type: 'number',
+                description: '返回候选对的最大数量，默认 50',
+                default: 50,
+              },
+              max_chars: {
+                type: 'number',
+                description: '文档级 embedding 截断字符数，默认 2000',
+                default: 2000,
+              },
+            },
+            required: ['path_like'],
+          },
+        },
+        {
+          name: 'find_similar_pages',
+          description: '查找已有 concept/entity 页面的近似匹配，用于 Ingest 去重决策。返回 merge/review/distinct 建议。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: {
+                type: 'string',
+                description: '候选名称 + 可选简短描述，作为检索 query',
+              },
+              kind: {
+                type: 'string',
+                enum: ['concept', 'entity'],
+                description: '页面类型，决定默认 path_like',
+              },
+              path_like: {
+                type: 'string',
+                description: '自定义 source_id LIKE 模式，覆盖 kind 的默认值（可选）',
+              },
+              top_k: {
+                type: 'number',
+                description: '返回匹配项数量，默认 5',
+                default: 5,
+              },
+              rerank: {
+                type: 'boolean',
+                description: '是否启用 cross-encoder rerank（首次会下载模型）。默认 false',
+                default: false,
+              },
+              candidate_title: {
+                type: 'string',
+                description: '候选页面标题，用于 bigram Jaccard 比较（可选，默认取 text）',
+              },
+            },
+            required: ['text', 'kind'],
           },
         },
       ];
@@ -711,6 +788,12 @@ export class KnowledgeMCPServer {
           case 'index_file':
             return await this.handleIndexFile(args);
 
+          case 'lint_duplicates':
+            return await this.handleLintDuplicates(args);
+
+          case 'find_similar_pages':
+            return await this.handleFindSimilarPages(args);
+
           // 飞书相关工具（统一 retry 包装）
           case 'get_bitable_records':
             return await this.withFeishuRetry(() => this.handleGetBitableRecords(args));
@@ -797,7 +880,7 @@ export class KnowledgeMCPServer {
    * 处理搜索请求
    */
   private async handleSearch(args: any) {
-    const { query, source, limit = 20 } = args;
+    const { query, source, limit = 20, rerank = false, rerank_pool } = args;
 
     if (!query || typeof query !== 'string') {
       throw new Error('query 参数必须是非空字符串');
@@ -813,7 +896,33 @@ export class KnowledgeMCPServer {
       queryEmbedding = vecToBuffer(vec);
     } catch { /* fallback to BM25 only */ }
 
-    const results: SearchResult[] = this.database.searchDocuments(query, filters, limit, queryEmbedding);
+    // 当 rerank 开启时多召回，避免被 db 层 limit 提前砍掉好结果
+    const poolSize = rerank ? (rerank_pool ?? Math.max(limit * 3, 30)) : limit;
+    let results: SearchResult[] = this.database.searchDocuments(query, filters, poolSize, queryEmbedding);
+
+    let rerankApplied = false;
+    let rerankError: string | undefined;
+    if (rerank && results.length > 1) {
+      try {
+        const { rerank: doRerank } = await import('./retrieval/reranker.js');
+        const reranked = await doRerank(
+          query,
+          results.map((r) => ({
+            payload: r,
+            // 用 title + snippet 作为重排输入；snippet 已是 query-aware 截取
+            text: `${r.title}\n${r.snippet}`,
+          }))
+        );
+        results = reranked.slice(0, limit).map((x) => x.payload);
+        rerankApplied = true;
+      } catch (e: any) {
+        // rerank 失败不影响主流程，回退到融合分数顺序；但把原因透传给客户端
+        rerankError = e?.message || String(e);
+        results = results.slice(0, limit);
+      }
+    } else if (rerank) {
+      results = results.slice(0, limit);
+    }
 
     return {
       content: [
@@ -822,6 +931,9 @@ export class KnowledgeMCPServer {
           text: JSON.stringify(
             {
               total: results.length,
+              rerank_requested: rerank,
+              rerank_applied: rerankApplied,
+              ...(rerankError ? { rerank_error: rerankError } : {}),
               documents: results.map((r) => ({
                 id: r.id,
                 title: r.title,
@@ -956,6 +1068,79 @@ export class KnowledgeMCPServer {
             title: result.title,
             chunks: result.chunks,
           }, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理近似重复检测请求 (P0-3)
+   */
+  private async handleLintDuplicates(args: any) {
+    const { path_like, threshold, limit, max_chars } = args || {};
+    if (!path_like || typeof path_like !== 'string') {
+      throw new Error('path_like 参数必须是非空字符串，例如 "%/wiki/concepts/%"');
+    }
+    const result = await lintDuplicates(this.database, {
+      pathLike: path_like,
+      threshold,
+      limit,
+      maxChars: max_chars,
+    });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * 处理 find_similar_pages 请求 (P0-2)
+   * 注入 db.searchDocuments / embedQuery / reranker 三个依赖给 similar 模块
+   */
+  private async handleFindSimilarPages(args: any) {
+    const { text, kind, path_like, top_k, rerank, candidate_title } = args || {};
+    if (!text || typeof text !== 'string') {
+      throw new Error('text 参数必须是非空字符串');
+    }
+    if (kind !== 'concept' && kind !== 'entity') {
+      throw new Error('kind 必须是 "concept" 或 "entity"');
+    }
+
+    const searchFn = (query: string, filters: any, limit: number, queryEmbedding?: Buffer) =>
+      this.database.searchDocuments(query, filters, limit, queryEmbedding);
+
+    const embedQuery = async (q: string): Promise<Buffer | undefined> => {
+      try {
+        const { embed, vecToBuffer } = await import('./utils/embedder.js');
+        return vecToBuffer(await embed(q));
+      } catch {
+        return undefined;
+      }
+    };
+
+    const rerankFn = rerank
+      ? async (q: string, candidates: Array<{ payload: SearchResult; text: string }>) => {
+          const { rerank: doRerank } = await import('./retrieval/reranker.js');
+          return doRerank(q, candidates);
+        }
+      : undefined;
+
+    const result = await findSimilarPages(
+      this.database,
+      { text, kind, path_like, top_k, rerank, candidate_title },
+      searchFn,
+      embedQuery,
+      rerankFn
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };

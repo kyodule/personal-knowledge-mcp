@@ -61,6 +61,8 @@ export interface SearchFilters {
   tags?: string[];
   date_from?: string;
   date_to?: string;
+  /** SQL LIKE 模式，按 documents.source_id 过滤，例如 "%/wiki/concepts/%" */
+  path_like?: string;
 }
 
 /**
