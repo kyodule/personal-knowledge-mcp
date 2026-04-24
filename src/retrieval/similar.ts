@@ -33,6 +33,11 @@ export interface SimilarPage {
   reasons: string[];
 }
 
+/**
+ * 注意 path_like 应尽量收窄到具体 vault 路径前缀（如
+ * "/Users/<you>/Documents/myob/wiki/concepts/%"），避免命中 logseq/bak 等备份目录
+ * 导致正式页 vs 备份页被误判为 merge 候选。
+ */
 const DEFAULT_PATH_LIKE: Record<'concept' | 'entity', string> = {
   concept: '%/wiki/concepts/%',
   entity: '%/wiki/entities/%',
@@ -70,15 +75,19 @@ export async function findSimilarPages(
   }
 
   // 标注 title jaccard，组合判定 suggested_action
+  // 规则收紧（修复 smoke 反馈：top 2 无 title 相似就被标 review，假阳性高）：
+  //   merge:    title bigram Jaccard >= 0.7（强信号，名称几乎相同）
+  //   review:   title 中等相似 (>= 0.4)  OR  显式开了 rerank 且在 top 2（强语义证据）
+  //   distinct: 其它（默认更保守，不打扰用户）
   const annotated: SimilarPage[] = ranked.map((r, idx) => {
     const tj = titleJaccard(candidateTitle, r.title);
     const reasons: string[] = [];
     if (idx < 3) reasons.push('top hybrid hit');
     if (tj >= 0.6) reasons.push(`title bigram Jaccard ${tj.toFixed(2)}`);
+    if (input.rerank && idx < 2) reasons.push('top-2 after cross-encoder rerank');
     let action: SimilarPage['suggested_action'] = 'distinct';
-    // rule: title 高度相似 → merge；topK 内但 title 不相似 → review
     if (tj >= 0.7) action = 'merge';
-    else if (idx < top_k && (tj >= 0.4 || idx < 2)) action = 'review';
+    else if (tj >= 0.4 || (input.rerank && idx < 2)) action = 'review';
     return {
       id: r.id,
       title: r.title,

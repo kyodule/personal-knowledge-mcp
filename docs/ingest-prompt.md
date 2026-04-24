@@ -49,6 +49,8 @@ find_similar_pages({
   text: "<name>\n<rationale>",
   kind: "concept" | "entity",
   candidate_title: "<name>",
+  // 强烈建议显式传 path_like，限定到具体 vault 前缀，避免命中 logseq/bak 等备份目录：
+  path_like: "/Users/<you>/Documents/myob/wiki/concepts/%",
   top_k: 5,
   rerank: false   // 第一次跑可关；信号不够时再开（首次会下载 ~200MB 模型）
 })
@@ -59,8 +61,8 @@ find_similar_pages({
 | suggested_action | 触发规则 | 处理方式 |
 |---|---|---|
 | `merge` | 标题 bigram Jaccard ≥ 0.7（强信号） | 合并到该已有页面：追加新内容 + 加反向链接 + 在 frontmatter `aliases:` 加入新名称 |
-| `review` | top_k 内但标题 jaccard < 0.7（语义近但命名不同） | 在 `wiki/log.md` 标 `[NEEDS_REVIEW]` 留指针；当前可暂建新页，待人审 |
-| `distinct` | 不在 top_k 或所有信号都弱 | 直接新建页面 |
+| `review` | 标题中等相似 (Jaccard ≥ 0.4) **或** 开了 rerank 且在 top-2（强语义证据） | 在 `wiki/log.md` 标 `[NEEDS_REVIEW]` 留指针；当前可暂建新页，待人审 |
+| `distinct` | 其它情况（默认保守，不打扰） | 直接新建页面 |
 
 **没有任何 matches** → 直接新建（即 `findSimilarPages` 返回 `matches: []`）。
 

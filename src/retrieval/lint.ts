@@ -7,7 +7,11 @@ import { KnowledgeDatabase } from '../storage/database.js';
 import { cosine, embedDocsBatch, titleJaccard } from './common.js';
 
 export interface LintDuplicateInput {
-  /** 路径模式，LIKE 语法，如 "%/wiki/concepts/%"；对 local source 生效 */
+  /**
+   * 路径模式，LIKE 语法，例如 "%/wiki/concepts/%"。
+   * 注意：通配模式（%/wiki/concepts/%）会同时命中 logseq/bak 等备份目录，
+   * 推荐传具体 vault 前缀，例如 "/Users/<you>/Documents/myob/wiki/concepts/%"。
+   */
   pathLike: string;
   /** 语义相似度阈值，默认 0.85 */
   threshold?: number;
