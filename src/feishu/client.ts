@@ -3,6 +3,14 @@ import { FeishuConfig } from '../types.js';
 
 let clientInstance: lark.Client | null = null;
 
+const silentLogger = {
+  error: () => {},
+  warn: () => {},
+  info: () => {},
+  debug: () => {},
+  trace: () => {},
+};
+
 /**
  * 获取飞书客户端实例（单例模式）
  */
@@ -17,6 +25,8 @@ export function getFeishuClient(config: FeishuConfig): lark.Client {
       appSecret: config.app_secret,
       appType: lark.AppType.SelfBuild,
       domain: lark.Domain.Feishu,
+      logger: silentLogger,
+      loggerLevel: lark.LoggerLevel.fatal,
     });
   }
 
