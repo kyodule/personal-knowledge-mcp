@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -38,6 +39,40 @@ import {
   appendSheetData,
 } from './feishu/index.js';
 
+export interface ServerResources {
+  database: KnowledgeDatabase;
+  localCrawler?: LocalCrawler;
+  feishuClient?: lark.Client;
+  config: Config;
+}
+
+export function createResources(config: Config): ServerResources {
+  const database = new KnowledgeDatabase(config.database.path);
+  let localCrawler: LocalCrawler | undefined;
+  if (config.local?.enabled) {
+    localCrawler = new LocalCrawler(
+      database,
+      config.local.watch_paths,
+      config.local.file_extensions,
+      config.local.exclude_patterns,
+    );
+  }
+  let feishuClient: lark.Client | undefined;
+  if (config.feishu?.enabled && config.feishu.app_id && config.feishu.app_secret) {
+    feishuClient = getFeishuClient(config.feishu);
+  }
+  return { database, localCrawler, feishuClient, config };
+}
+
+export function closeResources(resources: ServerResources): void {
+  resources.localCrawler?.stopWatching();
+  resources.database.close();
+}
+
+export function createMCPServer(resources: ServerResources): KnowledgeMCPServer {
+  return new KnowledgeMCPServer(resources);
+}
+
 /**
  * 个人知识库 MCP Server
  */
@@ -47,24 +82,42 @@ export class KnowledgeMCPServer {
   private localCrawler?: LocalCrawler;
   private feishuClient?: lark.Client;
   private config: Config;
+  private resources?: ServerResources;
+  private _ownsResources: boolean;
 
-  constructor(config: Config) {
-    this.config = config;
-    this.database = new KnowledgeDatabase(config.database.path);
+  constructor(configOrResources: Config | ServerResources) {
+    // Discriminator: ServerResources.database is KnowledgeDatabase instance,
+    // Config.database is { path: string }
+    if (configOrResources.database instanceof KnowledgeDatabase) {
+      // From shared resources (HTTP mode)
+      const resources = configOrResources as ServerResources;
+      this.resources = resources;
+      this.config = resources.config;
+      this.database = resources.database;
+      this.localCrawler = resources.localCrawler;
+      this.feishuClient = resources.feishuClient;
+      this._ownsResources = false;
+    } else {
+      // From config (stdio mode, existing behavior)
+      const config = configOrResources as Config;
+      this.config = config;
+      this.database = new KnowledgeDatabase(config.database.path);
 
-    // 初始化本地爬虫
-    if (config.local.enabled) {
-      this.localCrawler = new LocalCrawler(
-        this.database,
-        config.local.watch_paths,
-        config.local.file_extensions,
-        config.local.exclude_patterns
-      );
-    }
+      // 初始化本地爬虫
+      if (config.local?.enabled) {
+        this.localCrawler = new LocalCrawler(
+          this.database,
+          config.local.watch_paths,
+          config.local.file_extensions,
+          config.local.exclude_patterns,
+        );
+      }
 
-    // 初始化飞书客户端
-    if (config.feishu.enabled && config.feishu.app_id && config.feishu.app_secret) {
-      this.feishuClient = getFeishuClient(config.feishu);
+      // 初始化飞书客户端
+      if (config.feishu?.enabled && config.feishu.app_id && config.feishu.app_secret) {
+        this.feishuClient = getFeishuClient(config.feishu);
+      }
+      this._ownsResources = true;
     }
 
     // 创建 MCP Server
@@ -1172,6 +1225,9 @@ export class KnowledgeMCPServer {
             // 重置客户端实例，强制重新获取 token
             resetFeishuClient();
             this.feishuClient = getFeishuClient(this.config.feishu);
+            if (this.resources) {
+              this.resources.feishuClient = this.feishuClient;
+            }
             await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
             continue;
           }
@@ -1682,8 +1738,10 @@ export class KnowledgeMCPServer {
   /**
    * 启动服务器
    */
-  async start(): Promise<void> {
-    const transport = new StdioServerTransport();
+  async start(transport?: Transport): Promise<void> {
+    if (!transport) {
+      transport = new StdioServerTransport();
+    }
     await this.server.connect(transport);
 
     // 日志已移至文件，保持 stdio 干净
@@ -1693,10 +1751,12 @@ export class KnowledgeMCPServer {
    * 关闭服务器
    */
   async close(): Promise<void> {
-    if (this.localCrawler) {
-      await this.localCrawler.stopWatching();
+    if (this._ownsResources) {
+      if (this.localCrawler) {
+        await this.localCrawler.stopWatching();
+      }
+      this.database.close();
     }
-    this.database.close();
     await this.server.close();
   }
 }
