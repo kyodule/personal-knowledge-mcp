@@ -125,6 +125,9 @@ export interface Config {
   database: {
     path: string;
   };
+  server?: {
+    port?: number;
+  };
 }
 
 /**
