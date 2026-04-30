@@ -1,4 +1,7 @@
 {
+  "server": {
+    "port": 3100
+  },
   "local": {
     "enabled": true,
     "watch_paths": [
